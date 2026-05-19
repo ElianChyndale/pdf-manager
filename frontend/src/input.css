@@ -1,0 +1,11 @@
+@import "./styles/tailwind.css";
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/components.css";
+@import "./styles/upload-workflow.css";
+@import "./styles/reader.css";
+@import "./styles/job-dialogs.css";
+@import "./styles/credential-settings.css";
+@import "./styles/status-card.css";
+@import "./styles/pdf-tools.css";
+@import "./styles/pages.css";

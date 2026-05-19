@@ -1,0 +1,86 @@
+<h2>UI 设计方案：集成到主页面</h2>
+<p class="subtitle">在当前 PDF Manager 主页面添加 PDF 工具箱面板</p>
+
+<div class="section">
+  <h3>页面布局</h3>
+  <div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin:12px 0;background:var(--surface);font-family:monospace;font-size:13px;line-height:1.8">
+    ┌─────────────────────────────────────────────────────┐<br>
+    │  [PDF Manager Logo]      [PDF工具箱 ▼]  [设置] [关于]  │<br>
+    ├─────────────────────────────────────────────────────┤<br>
+    │  ┌─────────────────────────────────────────────┐   │<br>
+    │  │  工作流配置 [book] [translate] [render]      │   │<br>
+    │  │  ┌──────┐  上传区域 ┌──────────┐            │   │<br>
+    │  │  │ PDF  │ → → → → │ 提交翻译  │            │   │<br>
+    │  │  └──────┘          └──────────┘            │   │<br>
+    │  └─────────────────────────────────────────────┘   │<br>
+    │  ┌─────────────────────────────────────────────┐   │<br>
+    │  │  📦 PDF 工具箱                               │   │<br>
+    │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ │   │<br>
+    │  │  │ 合并PDF │ │ 拆分PDF │ │ 压缩   │ │ 旋转   │ │   │<br>
+    │  │  └────────┘ └────────┘ └────────┘ └────────┘ │   │<br>
+    │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ │   │<br>
+    │  │  │ 水印   │ │ 页码   │ │ 裁剪   │ │ 加密   │ │   │<br>
+    │  │  └────────┘ └────────┘ └────────┘ └────────┘ │   │<br>
+    │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ │   │<br>
+    │  │  │ 元数据 │ │ 重排   │ │ PDF→图片│ │ 更多▾  │ │   │<br>
+    │  │  └────────┘ └────────┘ └────────┘ └────────┘ │   │<br>
+    │  └─────────────────────────────────────────────┘   │<br>
+    │  ┌─────────────────────────────────────────────┐   │<br>
+    │  │  最近任务列表                                 │   │<br>
+    │  │  • Job #1234 [已完成]                        │   │<br>
+    │  │  • Job #1235 [翻译中]                        │   │<br>
+    │  └─────────────────────────────────────────────┘   │<br>
+    └─────────────────────────────────────────────────────┘
+  </div>
+</div>
+
+<div class="section">
+  <h3>工具交互模式</h3>
+  <p>点击工具按钮 → 弹出侧边面板 (Slide-over panel)：</p>
+  <div style="display:flex;gap:16px;margin-top:8px">
+    <div style="flex:1;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface)">
+      <strong>合并 PDF</strong><br>
+      <span style="font-size:12px">多文件上传 → 拖拽排序 → 合并下载</span>
+    </div>
+    <div style="flex:1;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface)">
+      <strong>拆分 PDF</strong><br>
+      <span style="font-size:12px">选择文件 → 输入页码范围 → 下载分卷</span>
+    </div>
+    <div style="flex:1;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface)">
+      <strong>水印/页码/加密</strong><br>
+      <span style="font-size:12px">选择文件 → 配置参数 → 一键应用</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>优先级顺序（分 3 批交付）</h3>
+  <div style="margin:8px 0">
+    <div style="background:#1a3a1a;border-left:3px solid #4caf50;padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0">
+      <strong>第一批（快速可用）</strong>：合并PDF · 拆分PDF · 压缩 · 旋转 · 元数据编辑 · 加密/解密
+    </div>
+    <div style="background:#1a2a3a;border-left:3px solid #2196f3;padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0">
+      <strong>第二批（常用工具）</strong>：水印 · 页码 · 裁剪 · 页面重排 · PDF→图片
+    </div>
+    <div style="background:#2a1a1a;border-left:3px solid #ff9800;padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0">
+      <strong>第三批（高级功能）</strong>：签名 · 注释 · PDF比较 · 批量处理 · 图片→PDF
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content">
+      <h3>方案 OK，开始实现</h3>
+      <p>这个设计可以，开始吧</p>
+    </div>
+  </div>
+  <div class="option" data-choice="revise" onclick="toggleSelect(this)">
+    <div class="letter">✗</div>
+    <div class="content">
+      <h3>需要调整</h3>
+      <p>我想修改一些设计</p>
+    </div>
+  </div>
+</div>

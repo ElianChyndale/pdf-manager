@@ -1,0 +1,152 @@
+<main id="app-shell" class="page app-shell">
+  <app-shell-header></app-shell-header>
+
+  <section class="card workspace-hero-panel">
+    <div class="workspace-hero-copy">
+      <span class="workspace-kicker">PDF Manager Thesis Studio</span>
+      <h2>更简洁的论文翻译工作台</h2>
+      <p>上传论文、执行翻译、查看状态与做 PDF 二次处理集中在一个界面里，减少跳转，也更适合长文稿反复调校。</p>
+    </div>
+    <div class="workspace-hero-metrics" aria-label="功能亮点">
+      <span>正文优先翻译</span>
+      <span>PDF 清理后覆盖</span>
+      <span>术语表可复用</span>
+      <span>最近任务随时回看</span>
+    </div>
+  </section>
+
+  <section class="workspace-grid">
+    <div class="workspace-column-main">
+      <section class="card workflow-card">
+        <div class="workspace-section-head">
+          <div>
+            <span class="workspace-mini-kicker">Translation Flow</span>
+            <h3>上传并翻译论文 PDF</h3>
+          </div>
+          <p>保留公式与版面结构，优先得到可读、干净的中文论文页面。</p>
+        </div>
+        <div id="job-warning" class="job-warning hidden">检测到上一个任务仍在处理中。建议先等待当前任务结束，再提交新的 PDF。</div>
+
+        <form id="job-form" class="form" novalidate>
+          <input id="ocr_provider" name="ocr_provider" type="hidden" value="paddle" />
+          <input id="mineru_token" name="mineru_token" type="hidden" value="" />
+          <input id="paddle_token" name="paddle_token" type="hidden" value="" />
+          <input id="api_key" name="api_key" type="hidden" value="" />
+
+          <div class="upload-tile upload-tile-hero">
+            <input id="file" name="file" type="file" accept="application/pdf,.pdf" />
+            <span id="upload-fill" class="upload-fill" aria-hidden="true"></span>
+            <div id="credential-gate" class="credential-gate hidden">
+              <div class="credential-gate-panel" aria-live="polite">
+                <span class="credential-gate-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M8 11V8a4 4 0 1 1 8 0v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    <rect x="5" y="11" width="14" height="10" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                    <circle cx="12" cy="16" r="1.2" fill="currentColor"/>
+                  </svg>
+                </span>
+                <strong id="credential-gate-title">请先完成接口设置</strong>
+                <em id="credential-gate-help">填写 OCR Token 和 DeepSeek Key 后即可上传 PDF。</em>
+                <button id="credential-gate-action" type="button" class="credential-gate-action">去设置接口</button>
+              </div>
+            </div>
+            <span id="upload-glyph" class="upload-glyph" aria-hidden="true">
+              <span class="upload-glyph-h"></span>
+              <span class="upload-glyph-v"></span>
+            </span>
+            <strong id="file-label">拖拽或点击上传 PDF</strong>
+            <em id="upload-help">上传后会先完成文件校验，再进入任务处理。</em>
+            <div class="upload-meta upload-meta-inline">
+              <span>单个 PDF</span>
+              <span>最大 100MB</span>
+              <span>最多 999 页</span>
+            </div>
+            <div id="upload-status" class="upload-status hidden">尚未选择文件</div>
+            <div id="upload-progress-panel" class="upload-progress-panel hidden" aria-live="polite">
+              <span id="upload-progress-text">上传中</span>
+            </div>
+            <div id="inline-page-range" class="inline-page-range hidden" aria-label="翻译页码范围">
+              <label>
+                <span>起始页</span>
+                <input id="page-range-start" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" placeholder="1" />
+              </label>
+              <label>
+                <span>结束页</span>
+                <input id="page-range-end" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" placeholder="总页数" />
+              </label>
+            </div>
+            <div id="upload-action-slot" class="upload-action-slot hidden">
+              <div class="upload-action-group">
+                <button id="page-range-btn" type="button" class="page-range-mini secondary" aria-label="专业翻译" title="专业翻译">专业翻译</button>
+                <button id="submit-btn" type="submit" disabled>开始翻译</button>
+              </div>
+            </div>
+          </div>
+          <inline-error-box id="error-box-inline" class="hidden">-</inline-error-box>
+        </form>
+      </section>
+
+      <job-status-card id="status-section"></job-status-card>
+    </div>
+
+    <aside class="workspace-column-side">
+      <section id="pdf-toolbox" class="card pdf-toolbox">
+        <div class="workspace-section-head workspace-section-head-compact">
+          <div>
+            <span class="workspace-mini-kicker">PDF Toolkit</span>
+            <h3>常用 PDF 工具</h3>
+          </div>
+          <p>合并、拆分、压缩与轻量编辑都放在这里。</p>
+        </div>
+        <div class="tool-grid">
+          <button data-tool="tool-merge" class="tool-btn" title="合并多个 PDF 为一个">
+            <span class="tool-icon">⊞</span>
+            <span class="tool-label">合并 PDF</span>
+          </button>
+          <button data-tool="tool-split" class="tool-btn" title="按页码拆分 PDF">
+            <span class="tool-icon">⊟</span>
+            <span class="tool-label">拆分 PDF</span>
+          </button>
+          <button data-tool="tool-compress" class="tool-btn" title="压缩 PDF 图片体积">
+            <span class="tool-icon">▾</span>
+            <span class="tool-label">压缩</span>
+          </button>
+          <button data-tool="tool-rotate" class="tool-btn" title="旋转 PDF 页面">
+            <span class="tool-icon">↻</span>
+            <span class="tool-label">旋转</span>
+          </button>
+          <button data-tool="tool-metadata" class="tool-btn" title="编辑 PDF 文档信息">
+            <span class="tool-icon">ℹ</span>
+            <span class="tool-label">元数据</span>
+          </button>
+          <button data-tool="tool-encrypt" class="tool-btn" title="加密或解密 PDF">
+            <span class="tool-icon">🔒</span>
+            <span class="tool-label">加密</span>
+          </button>
+          <button data-tool="tool-more" class="tool-btn tool-btn-more" title="更多功能即将上线">
+            <span class="tool-icon">⋯</span>
+            <span class="tool-label">更多</span>
+          </button>
+        </div>
+      </section>
+
+      <div class="query-entry workspace-actions-card">
+        <button id="open-query-btn" type="button" class="secondary">最近任务</button>
+        <button id="credentials-btn" type="button" class="icon-button secondary" aria-label="接口设置" title="接口设置">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.58.22-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.84a.5.5 0 0 0 .49-.42l.36-2.54c.58-.22 1.13-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58Z" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"/>
+            <circle cx="12" cy="12" r="2.9" stroke="currentColor" stroke-width="1.45"/>
+          </svg>
+        </button>
+        <button id="glossary-btn" type="button" class="icon-button secondary" aria-label="术语表" title="术语表">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6.5 4.5h8.8c1.2 0 2.2 1 2.2 2.2v12.8H8a2.5 2.5 0 0 1 0-5h9.5" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M6.5 16.4V6.7c0-1.2 1-2.2 2.2-2.2M10 8.5h4M10 11.2h3" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+  </section>
+
+  <recent-jobs-dialog></recent-jobs-dialog>
+</main>

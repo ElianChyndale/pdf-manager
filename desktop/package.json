@@ -1,0 +1,91 @@
+{
+  "name": "pdf-manager-desktop",
+  "version": "4.1.1-beta6",
+  "private": true,
+  "description": "PDF Manager desktop wrapper",
+  "homepage": "https://github.com/ElianChyndale/pdf-manager",
+  "author": {
+    "name": "ElianChyndale",
+    "email": "ElianChyndale@gmail.com"
+  },
+  "main": "main.js",
+  "scripts": {
+    "sync:win-frontend": "node scripts/sync-win-frontend.mjs",
+    "install-git-hooks": "sh scripts/install-git-hooks.sh",
+    "smoke:frontend-bundle": "node scripts/check-frontend-bundle.mjs",
+    "smoke:frontend-desktop": "npm --prefix ../frontend run smoke:desktop-first-run && npm run smoke:frontend-bundle",
+    "sync-frontend": "npm --prefix ../frontend run build && node scripts/prepare-app.mjs --frontend-only",
+    "verify-frontend-sync": "npm run sync-frontend && npm run smoke:frontend-desktop",
+    "prepare-app": "npm --prefix ../frontend run build && node scripts/prepare-app.mjs",
+    "dist:win32": "npm run prepare-app && electron-builder --win portable --ia32 --config.directories.output=win",
+    "dist:win32-installer": "npm run prepare-app && electron-builder --win nsis --ia32 --config.directories.output=win",
+    "dist:mac": "PDF_MANAGER_BUNDLE_MAC_PYTHON=1 npm run prepare-app && PDF_MANAGER_BUNDLE_MAC_PYTHON=1 electron-builder --mac dmg --publish never --config.directories.output=mac",
+    "dist:linux": "npm run prepare-app && electron-builder --linux deb --publish never --config.directories.output=linux"
+  },
+  "devDependencies": {
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.elian.pdf-manager",
+    "productName": "PDF Manager",
+    "directories": {
+      "buildResources": "build"
+    },
+    "files": [
+      "app/frontend/**/*",
+      "assets/**/*",
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "app/backend",
+        "to": "backend"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "ia32"
+          ]
+        }
+      ],
+      "artifactName": "PDF Manager-Windows-${version}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "artifactName": "PDF Manager-Mac-${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "category": "Utility",
+      "icon": "build/icons",
+      "maintainer": "ElianChyndale <ElianChyndale@gmail.com>",
+      "desktop": {
+        "Name": "PDF Manager",
+        "Comment": "PDF retain-layout translation desktop application",
+        "Categories": "Office;Utility;",
+        "StartupWMClass": "PDF Manager"
+      },
+      "artifactName": "PDF Manager-Linux-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "PDF Manager-Windows-${version}-Setup.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    }
+  }
+}

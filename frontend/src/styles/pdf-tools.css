@@ -1,0 +1,263 @@
+/* PDF 工具箱 */
+.pdf-toolbox {
+  margin-top: 0;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.95rem 0.9rem;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(126, 108, 92, 0.1);
+  border-radius: 18px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 0.8rem;
+  color: var(--ink);
+  min-height: 94px;
+  text-align: left;
+}
+.tool-btn:hover {
+  border-color: rgba(28, 122, 107, 0.32);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(243, 250, 248, 0.96) 100%);
+  transform: translateY(-1px);
+}
+.tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: rgba(28, 122, 107, 0.1);
+  color: var(--accent);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.tool-label {
+  white-space: nowrap;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+/* Slide-over panel */
+.slide-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.slide-overlay.active {
+  opacity: 1;
+}
+
+.slide-panel {
+  position: fixed;
+  top: 0;
+  right: -480px;
+  width: 480px;
+  max-width: 100vw;
+  height: 100vh;
+  background: var(--paper);
+  box-shadow: -10px 0 40px rgba(55, 39, 24, 0.12);
+  transition: right 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  z-index: 1001;
+}
+.slide-overlay.active .slide-panel {
+  right: 0;
+}
+
+.slide-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(126, 108, 92, 0.1);
+}
+.slide-panel-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.slide-panel-close {
+  font-size: 1.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+  color: var(--muted);
+}
+.slide-panel-close:hover {
+  color: var(--ink);
+}
+.slide-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem;
+}
+
+/* Slide panel content */
+.slide-panel-desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+.slide-upload-area {
+  margin-bottom: 1rem;
+}
+.slide-file-list {
+  margin-top: 0.5rem;
+}
+.slide-file-item {
+  padding: 0.55rem 0.7rem;
+  background: rgba(113, 103, 95, 0.08);
+  border-radius: 12px;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+}
+.slide-config-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.slide-config-row label {
+  min-width: 5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.slide-config-row input,
+.slide-config-row select {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid rgba(126, 108, 92, 0.12);
+  border-radius: 12px;
+  font-size: 0.85rem;
+  background: rgba(255, 251, 246, 0.9);
+}
+.slide-result {
+  margin-top: 1rem;
+}
+.slide-result-success {
+  padding: 0.75rem;
+  background: var(--ok-weak);
+  border-radius: 16px;
+}
+.slide-result-error {
+  padding: 0.75rem;
+  background: var(--danger-weak);
+  border-radius: 16px;
+}
+.slide-result-links {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Progress bar */
+.progress-bar-container {
+  margin: 0.75rem 0;
+}
+.progress-bar {
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s;
+  width: 0%;
+}
+.progress-text {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+  display: block;
+}
+
+/* Split panel */
+.split-range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+.split-range-row label {
+  min-width: 4rem;
+  font-size: 0.85rem;
+}
+.split-range-row input {
+  width: 70px;
+  padding: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.split-remove-btn {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0.2rem;
+}
+
+/* Encrypt tabs */
+.slide-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(126, 108, 92, 0.12);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.slide-tab {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  border: none;
+  background: rgba(113, 103, 95, 0.08);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+.slide-tab.active {
+  background: var(--paper);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.slide-tab:not(.active):hover {
+  background: var(--accent-weak);
+}
+
+.slide-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 767px) {
+  .tool-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

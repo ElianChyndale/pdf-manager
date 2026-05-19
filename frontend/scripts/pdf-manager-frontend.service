@@ -1,0 +1,22 @@
+[Unit]
+Description=PDF Manager Frontend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=elian
+Group=users
+WorkingDirectory=/path/to/pdf-manager
+Environment=PDF_MANAGER_FRONTEND_ROOT=/path/to/pdf-manager/frontend
+Environment=PDF_MANAGER_FRONTEND_BIND_HOST=0.0.0.0
+Environment=PDF_MANAGER_FRONTEND_PORT=40001
+Environment=PDF_MANAGER_FRONTEND_X_API_KEY=
+ExecStart=/usr/local/bin/pdf-manager-frontend
+Restart=always
+RestartSec=3
+TimeoutStartSec=15
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

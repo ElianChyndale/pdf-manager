@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import threading
+from pathlib import Path
+
+from foundation.shared.prompt_loader import load_prompt
+from foundation.config import paths
+
+from services.translation.llm.shared.provider_runtime import extract_single_item_translation_text
+from services.translation.llm.shared.provider_runtime import normalize_base_url
+
+
+_PROMPT_HASHES: dict[str, str] = {}
+_CACHE_LOCK = threading.Lock()
+FORMULA_SEGMENT_STRATEGY_VERSION = "formula_segments_v2"
+PLAIN_TEXT_STRATEGY_VERSION = "plain_text_v2"
+TRANSLATION_PROTOCOL_VERSION = "translation_control_v4_structured_technical_context"
+TRANSLATION_POLICY_VERSION = "policy_hints_v2_memory_context_v1"
+UNESCAPED_INLINE_DOLLAR_RE = re.compile(r"(?<!\\)\$")
+TRANSLATION_PROMPT_FILES = (
+    "translation_system.txt",
+    "translation_system_plain_text.txt",
+    "translation_task.txt",
+    "translation_task_plain_text.txt",
+    "translation_direct_typst_guidance.txt",
+    "translation_output_json.txt",
+    "translation_output_plain_text.txt",
+    "translation_output_single_json.txt",
+    "translation_output_tagged.txt",
+)
+
+
+def _prompt_hash(mode: str = "fast") -> str:
+    cache_key = mode.strip() or "fast"
+    cached = _PROMPT_HASHES.get(cache_key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    for prompt_name in TRANSLATION_PROMPT_FILES:
+        digest.update(f"\n--- {prompt_name} ---\n".encode("utf-8"))
+        digest.update(load_prompt(prompt_name).encode("utf-8"))
+    if cache_key == "sci":
+        digest.update(b"\n---\n")
+        digest.update(b"SCI_LOCAL_DECISION_PLAIN_TEXT_V1")
+    result = digest.hexdigest()
+    _PROMPT_HASHES[cache_key] = result
+    return result
+
+
+def _unit_source_text(item: dict) -> str:
+    return (
+        item.get("translation_unit_protected_source_text")
+        or item.get("protected_source_text")
+        or item.get("source_text")
+        or ""
+    )
+
+
+def _strategy_signature(item: dict) -> str:
+    source_text = _unit_source_text(item)
+    if "[[FORMULA_" in source_text or "<f" in source_text:
+        return FORMULA_SEGMENT_STRATEGY_VERSION
+    return PLAIN_TEXT_STRATEGY_VERSION
+
+
+def _has_balanced_inline_math_delimiters(text: str) -> bool:
+    return len(UNESCAPED_INLINE_DOLLAR_RE.findall(text or "")) % 2 == 0
+
+
+def cache_key_for_item(
+    item: dict,
+    *,
+    model: str,
+    base_url: str,
+    domain_guidance: str = "",
+    mode: str = "fast",
+    target_lang: str = "zh-CN",
+    target_language_name: str = "简体中文",
+) -> str:
+    payload = {
+        "model": model.strip(),
+        "base_url": normalize_base_url(base_url),
+        "domain_guidance": (domain_guidance or "").strip(),
+        "mode": mode.strip() or "fast",
+        "target_lang": (target_lang or "zh-CN").strip() or "zh-CN",
+        "target_language_name": (target_language_name or "简体中文").strip() or "简体中文",
+        "prompt_hash": _prompt_hash(mode=mode),
+        "translation_protocol_version": TRANSLATION_PROTOCOL_VERSION,
+        "translation_policy_version": TRANSLATION_POLICY_VERSION,
+        "strategy_signature": _strategy_signature(item),
+        "translation_style_hint": str(item.get("translation_style_hint", "") or "").strip(),
+        "translation_structure_kind": str(item.get("translation_structure_kind", "") or "").strip(),
+        "source_text": _unit_source_text(item),
+    }
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _cache_path(cache_key: str) -> Path:
+    return paths.TRANSLATION_UNIT_CACHE_DIR / cache_key[:2] / f"{cache_key}.json"
+
+
+def load_cached_translation(
+    item: dict,
+    *,
+    model: str,
+    base_url: str,
+    domain_guidance: str = "",
+    mode: str = "fast",
+    target_lang: str = "zh-CN",
+    target_language_name: str = "简体中文",
+) -> dict[str, str]:
+    cache_key = cache_key_for_item(
+        item,
+        model=model,
+        base_url=base_url,
+        domain_guidance=domain_guidance,
+        mode=mode,
+        target_lang=target_lang,
+        target_language_name=target_language_name,
+    )
+    path = _cache_path(cache_key)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    decision = str(payload.get("decision", "translate") or "translate").strip() or "translate"
+    raw_translated_text = str(payload.get("translated_text", "") or "").strip()
+    translated_text = extract_single_item_translation_text(raw_translated_text, str(item.get("item_id", "") or ""))
+    if str(item.get("math_mode", "") or "").strip() == "direct_typst" and translated_text and not _has_balanced_inline_math_delimiters(translated_text):
+        return {}
+    if translated_text != raw_translated_text:
+        healed_payload = {
+            "cache_key": cache_key,
+            "decision": decision,
+            "translated_text": translated_text,
+        }
+        temp_path = path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+        with _CACHE_LOCK:
+            temp_path.write_text(json.dumps(healed_payload, ensure_ascii=False), encoding="utf-8")
+            temp_path.replace(path)
+    return {
+        "decision": decision,
+        "translated_text": translated_text,
+    }
+
+
+def store_cached_translation(
+    item: dict,
+    translation_result: dict[str, str],
+    *,
+    model: str,
+    base_url: str,
+    domain_guidance: str = "",
+    mode: str = "fast",
+    target_lang: str = "zh-CN",
+    target_language_name: str = "简体中文",
+) -> None:
+    decision = str(translation_result.get("decision", "translate") or "translate").strip() or "translate"
+    translated_text = str(translation_result.get("translated_text", "") or "").strip()
+    translated_text = extract_single_item_translation_text(translated_text, str(item.get("item_id", "") or ""))
+    if not translated_text and decision != "keep_origin":
+        return
+    cache_key = cache_key_for_item(
+        item,
+        model=model,
+        base_url=base_url,
+        domain_guidance=domain_guidance,
+        mode=mode,
+        target_lang=target_lang,
+        target_language_name=target_language_name,
+    )
+    path = _cache_path(cache_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cache_key": cache_key,
+        "decision": decision,
+        "translated_text": translated_text,
+    }
+    temp_path = path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+    with _CACHE_LOCK:
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(path)
+
+
+def split_cached_batch(
+    batch: list[dict],
+    *,
+    model: str,
+    base_url: str,
+    domain_guidance: str = "",
+    mode: str = "fast",
+    target_lang: str = "zh-CN",
+    target_language_name: str = "简体中文",
+) -> tuple[dict[str, dict[str, str]], list[dict]]:
+    cached: dict[str, dict[str, str]] = {}
+    missing: list[dict] = []
+    for item in batch:
+        cached_result = load_cached_translation(
+            item,
+            model=model,
+            base_url=base_url,
+            domain_guidance=domain_guidance,
+            mode=mode,
+            target_lang=target_lang,
+            target_language_name=target_language_name,
+        )
+        if cached_result:
+            cached[item["item_id"]] = cached_result
+        else:
+            missing.append(item)
+    return cached, missing
+
+
+def store_cached_batch(
+    batch: list[dict],
+    translated: dict[str, dict[str, str]],
+    *,
+    model: str,
+    base_url: str,
+    domain_guidance: str = "",
+    mode: str = "fast",
+    target_lang: str = "zh-CN",
+    target_language_name: str = "简体中文",
+) -> None:
+    for item in batch:
+        item_id = item.get("item_id", "")
+        translated_result = translated.get(item_id, {})
+        if not translated_result:
+            continue
+        store_cached_translation(
+            item,
+            translated_result,
+            model=model,
+            base_url=base_url,
+            domain_guidance=domain_guidance,
+            mode=mode,
+            target_lang=target_lang,
+            target_language_name=target_language_name,
+        )

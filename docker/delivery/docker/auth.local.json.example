@@ -1,0 +1,7 @@
+{
+  "api_keys": [
+    "change-me-to-your-backend-api-key"
+  ],
+  "max_running_jobs": 4,
+  "simple_port": 42000
+}

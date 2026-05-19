@@ -1,0 +1,82 @@
+<h2>新增 PDF 功能 — 实现方案选择</h2>
+<p class="subtitle">需要在现有 PDF Manager 单页应用中加入 10+ 个 PDF 工具功能</p>
+
+<div class="section">
+  <h3>方案 A：PDF 工具箱独立页面（推荐）</h3>
+  <p>新建一个 <code>tools.html</code> 页面，顶部导航栏添加"PDF工具箱"入口。所有工具功能集中在一个页面，</p>
+  <div class="pros-cons">
+    <div class="pros"><h4>优势</h4><ul>
+      <li>不干扰现有翻译工作流</li>
+      <li>功能集中，用户容易找到</li>
+      <li>代码隔离，降低维护风险</li>
+    </ul></div>
+    <div class="cons"><h4>劣势</h4><ul>
+      <li>需要额外导航切换</li>
+      <li>页面较多</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>方案 B：集成到现有主页面</h3>
+  <p>在主页面底部或侧边栏添加工具功能入口，展开后直接使用。</p>
+  <div class="pros-cons">
+    <div class="pros"><h4>优势</h4><ul>
+      <li>不用切换页面</li>
+      <li>保持单页应用体验</li>
+    </ul></div>
+    <div class="cons"><h4>劣势</h4><ul>
+      <li>主页面已经很复杂</li>
+      <li>工具功能挤在一起不好用</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>方案 C：分阶段推进，优先核心功能</h3>
+  <p>分 3 个阶段实现：</p>
+  <p><strong>Phase 1（快速可用）</strong>：Merge + Split + Compress + Rotation + Meta Editor + Encryption<br>
+  <strong>Phase 2（常用工具）</strong>：Watermark + Page Numbering + Crop + Page Reorder + PDF to Images<br>
+  <strong>Phase 3（高级功能）</strong>：Signature + Annotations + Diff + Batch Processing + Images to PDF</p>
+  <div class="pros-cons">
+    <div class="pros"><h4>优势</h4><ul>
+      <li>快速交付核心价值</li>
+      <li>每个阶段可测试+发布</li>
+      <li>后期功能需求明确后调整</li>
+    </ul></div>
+    <div class="cons"><h4>劣势</h4><ul>
+      <li>整体完成周期更长</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>方案 A：PDF 工具箱独立页面</h3>
+      <p>新建 tools.html + Rust API routes + Python 处理模块。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>方案 B：集成到现有主页面</h3>
+      <p>保持单页，嵌入工具面板。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>方案 C：分阶段推进</h3>
+      <p>3 个阶段逐步交付所有功能。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="hybrid" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>A+C 混合（推荐）</h3>
+      <p>独立工具箱 + 分阶段分批实现。</p>
+    </div>
+  </div>
+</div>

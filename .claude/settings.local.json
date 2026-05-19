@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem *)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Bash(Get-Command docker *)",
+      "Bash(Get-Command node *)",
+      "Bash(Get-Command npm *)",
+      "Bash(Get-Command python3 *)",
+      "Bash(Get-Command python *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(npm *)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(npm --version)",
+      "Bash(pip list *)",
+      "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
+      "Bash(sh -s -- -y)",
+      "PowerShell(claude plugin *)",
+      "Bash(git rm *)",
+      "Bash(git remote *)",
+      "Bash(git checkout *)",
+      "Bash(git reset *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
