@@ -23,11 +23,16 @@ class BBoxTextStripResult:
     changed_page_indices: frozenset[int] = frozenset()
     skipped_complex_page_indices: frozenset[int] = frozenset()
     skipped_no_text_overlap_page_indices: frozenset[int] = frozenset()
+    strict_replace_pages_targeted: frozenset[int] = frozenset()
+    strict_replace_pages_escalated: frozenset[int] = frozenset()
+    strict_replace_pages_verified_clean: frozenset[int] = frozenset()
+    strict_replace_pages_failed: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
 class BBoxTextStripCandidates:
     page_rects: dict[int, tuple[tuple[float, float, float, float], ...]]
+    page_target_rects: dict[int, tuple[tuple[float, float, float, float], ...]] | None = None
     page_protected_rects: dict[int, tuple[tuple[float, float, float, float], ...]] | None = None
     pages_skipped_complex: int = 0
     pages_skipped_no_text_overlap: int = 0
@@ -40,6 +45,12 @@ class BBoxTextStripCandidates:
             for page_idx, rects in self.page_rects.items()
         }
 
+    def fitz_page_target_rects(self) -> dict[int, list[fitz.Rect]]:
+        return {
+            page_idx: [fitz.Rect(rect) for rect in rects]
+            for page_idx, rects in (self.page_target_rects or {}).items()
+        }
+
     def fitz_page_protected_rects(self) -> dict[int, list[fitz.Rect]]:
         return {
             page_idx: [fitz.Rect(rect) for rect in rects]
@@ -49,6 +60,7 @@ class BBoxTextStripCandidates:
 
 @dataclass(frozen=True)
 class BBoxTextStripPagePlan:
+    target_rects: tuple[fitz.Rect, ...] = ()
     strip_rects: tuple[fitz.Rect, ...] = ()
     protected_rects: tuple[fitz.Rect, ...] = ()
     skip_reason: str = BBOX_TEXT_STRIP_PAGE_SKIP_NONE

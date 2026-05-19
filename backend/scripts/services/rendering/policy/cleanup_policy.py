@@ -8,6 +8,9 @@ from services.rendering.policy.geometry import x_overlap_ratio
 from services.rendering.policy.models import RenderItemPolicy
 from services.rendering.policy.models import RenderPagePolicy
 from services.translation.item_reader import item_block_kind
+from services.translation.item_reader import item_is_bodylike
+from services.translation.item_reader import item_is_caption_like
+from services.translation.item_reader import item_policy_translate
 
 
 FORMULA_NEIGHBOR_X_OVERLAP_RATIO = 0.18
@@ -185,6 +188,18 @@ def item_should_bbox_text_strip(item: dict, *, skip_item_ids: set[str] | None = 
     if skip_item_ids and str(item.get("item_id") or "").strip() in skip_item_ids:
         return False
     return item_block_kind(item) == "text" and item_has_render_source_or_output_text(item)
+
+
+def item_should_strict_replace_text_strip(item: dict, *, skip_item_ids: set[str] | None = None) -> bool:
+    if skip_item_ids and str(item.get("item_id") or "").strip() in skip_item_ids:
+        return False
+    if item_block_kind(item) != "text":
+        return False
+    if not item_has_render_source_or_output_text(item):
+        return False
+    if item_policy_translate(item) is False:
+        return False
+    return item_is_bodylike(item) or item_is_caption_like(item)
 
 
 def _page_formula_rects(items: list[dict]) -> list[fitz.Rect]:

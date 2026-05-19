@@ -1,0 +1,32 @@
+# Local build: extends the old retainpdf image with the current source code.
+# No network downloads needed — Typst, fonts, and packages are already in the base image.
+
+FROM wxyhgk/retainpdf-app:latest AS base
+
+# Build Rust API from current source
+FROM rust:1.88-slim-bookworm AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/rust_api/Cargo.toml backend/rust_api/Cargo.lock backend/rust_api/build.rs ./backend/rust_api/
+COPY backend/rust_api/src ./backend/rust_api/src
+
+WORKDIR /build/backend/rust_api
+RUN cargo build --release
+
+# Final stage: base image + new Rust binary + new Python scripts
+FROM base AS runtime
+
+# Replace Rust API binary
+COPY --from=builder /build/backend/rust_api/target/release/rust_api /app/backend/rust_api/target/release/rust_api
+
+# Replace Python scripts (pdf-tools and other updates)
+COPY backend/scripts/ /app/backend/scripts/
+
+# Replace frontend is handled separately via the web container

@@ -426,9 +426,9 @@ class TranslationFastPathTests(unittest.TestCase):
 
         payload = result[item["item_id"]]
         self.assertEqual(payload["decision"], "translate")
-        self.assertIn("这是第一句话", payload["translated_text"])
-        self.assertEqual(payload["translation_diagnostics"]["degradation_reason"], "english_residue_partial_accept")
-        self.assertEqual(payload["translation_diagnostics"]["route_path"], ["block_level", "english_residue_salvage"])
+        self.assertEqual(payload["translated_text"], "这是第一句话")
+        self.assertEqual(payload["translation_diagnostics"]["degradation_reason"], "english_residue_tail_trimmed")
+        self.assertEqual(payload["translation_diagnostics"]["route_path"], ["block_level", "english_residue_tail_trim"])
 
     def test_protocol_shell_unwrap_salvages_continuation_group_without_sentence_fallback(self):
         module = _load_module(

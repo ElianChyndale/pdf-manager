@@ -1,28 +1,26 @@
 {
-  "ok": true,
-  "apiBase": "http://127.0.0.1:41000",
+  "ok": false,
+  "apiBase": "http://127.0.0.1:40001",
   "workflow": "book",
   "ocrProvider": "paddle",
-  "file": "/home/wxyhgk/tmp/Code/data/20260418-strict-contract-smoke/source/test1.pdf",
-  "uploadId": "20260510173313-602be4",
-  "jobId": "20260510173313-ed54c4",
-  "finalStatus": "succeeded",
+  "file": "D:\\AmyProjects\\pdf-manager\\resources\\samples\\golden-pdfs\\1.pdf",
+  "uploadId": "20260519100311-221041",
+  "jobId": "20260519100311-24e23e",
+  "finalStatus": "failed",
   "observedLabels": [
     "排队中",
     "第 1/4 步 · OCR 解析",
-    "第 1/4 步 · OCR 解析",
+    "第 2/4 步 · 翻译准备",
     "第 2/4 步 · 翻译",
-    "第 2/4 步 · 翻译",
-    "第 2/4 步 · 翻译",
-    "第 2/4 步 · 翻译",
-    "第 3/4 步 · 渲染",
+    "失败"
+  ],
+  "missingLabels": [
     "第 3/4 步 · 渲染",
     "完成"
   ],
-  "missingLabels": [],
   "observations": [
     {
-      "ts": "2026-05-10T17:33:14.009Z",
+      "ts": "2026-05-19T10:03:11.161Z",
       "status": "queued",
       "stage": "queued",
       "label": "排队中",
@@ -32,27 +30,27 @@
       "progressText": ""
     },
     {
-      "ts": "2026-05-10T17:33:15.023Z",
+      "ts": "2026-05-19T10:03:12.169Z",
       "status": "running",
       "stage": "ocr_upload",
       "label": "第 1/4 步 · OCR 解析",
-      "detail": "正在上传 PDF",
+      "detail": "Paddle 已接收任务，等待排队",
       "progressCurrent": 0,
       "progressTotal": 0,
       "progressText": "OCR 准备中"
     },
     {
-      "ts": "2026-05-10T17:33:17.055Z",
+      "ts": "2026-05-19T10:03:17.201Z",
       "status": "running",
-      "stage": "ocr_result_ready",
-      "label": "第 1/4 步 · OCR 解析",
-      "detail": "Paddle 结果已就绪，准备标准化",
+      "stage": "translation_prepare",
+      "label": "第 2/4 步 · 翻译准备",
+      "detail": "正在启动 OCR 子任务",
       "progressCurrent": 1,
       "progressTotal": 1,
-      "progressText": "第 1/1 页"
+      "progressText": "进度 1/1"
     },
     {
-      "ts": "2026-05-10T17:33:18.071Z",
+      "ts": "2026-05-19T10:03:18.209Z",
       "status": "running",
       "stage": "translating",
       "label": "第 2/4 步 · 翻译",
@@ -62,163 +60,113 @@
       "progressText": ""
     },
     {
-      "ts": "2026-05-10T17:33:31.233Z",
-      "status": "running",
+      "ts": "2026-05-19T10:03:20.251Z",
+      "status": "failed",
       "stage": "translating",
-      "label": "第 2/4 步 · 翻译",
-      "detail": "正在翻译正文内容",
-      "progressCurrent": 1,
-      "progressTotal": 5,
-      "progressText": "第 1/5 批"
-    },
-    {
-      "ts": "2026-05-10T17:33:32.245Z",
-      "status": "running",
-      "stage": "translating",
-      "label": "第 2/4 步 · 翻译",
-      "detail": "正在翻译正文内容",
-      "progressCurrent": 3,
-      "progressTotal": 5,
-      "progressText": "第 3/5 批"
-    },
-    {
-      "ts": "2026-05-10T17:33:33.259Z",
-      "status": "running",
-      "stage": "translating",
-      "label": "第 2/4 步 · 翻译",
-      "detail": "正在翻译正文内容",
-      "progressCurrent": 4,
-      "progressTotal": 5,
-      "progressText": "第 4/5 批"
-    },
-    {
-      "ts": "2026-05-10T17:33:35.283Z",
-      "status": "running",
-      "stage": "finished",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "progressCurrent": 0,
-      "progressTotal": 0,
-      "progressText": ""
-    },
-    {
-      "ts": "2026-05-10T17:33:36.293Z",
-      "status": "running",
-      "stage": "rendering",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "progressCurrent": 0,
-      "progressTotal": 1,
-      "progressText": "第 0/1 页"
-    },
-    {
-      "ts": "2026-05-10T17:33:37.307Z",
-      "status": "succeeded",
-      "stage": "finished",
-      "label": "完成",
-      "detail": "翻译 PDF 已生成",
+      "label": "失败",
+      "detail": "鉴权失败",
       "progressCurrent": 0,
       "progressTotal": 0,
       "progressText": ""
     }
   ],
-  "eventCount": 51,
+  "eventCount": 34,
   "eventSamples": [
     {
-      "ts": "2026-05-10T17:33:35.552208Z",
+      "ts": "2026-05-19T10:03:19.191842Z",
       "status": "running",
-      "stage": "render_prepare",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "stage_transition"
-    },
-    {
-      "ts": "2026-05-10T17:33:35.777971Z",
-      "status": "running",
-      "stage": "rendering",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "stage_transition"
-    },
-    {
-      "ts": "2026-05-10T17:33:35Z",
-      "status": "running",
-      "stage": "rendering",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "stage_updated"
-    },
-    {
-      "ts": "2026-05-10T17:33:35Z",
-      "status": "running",
-      "stage": "rendering",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "stage_transition"
-    },
-    {
-      "ts": "2026-05-10T17:33:36.751537Z",
-      "status": "running",
-      "stage": "rendering",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
+      "stage": "continuation_review",
+      "label": "第 2/4 步 · 跨栏/跨页判断",
+      "detail": "正在判断跨栏/跨页连续段",
       "event": "stage_progress"
     },
     {
-      "ts": "2026-05-10T17:33:36.752031Z",
+      "ts": "2026-05-19T10:03:19.191913Z",
       "status": "running",
-      "stage": "saving",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "artifact_published"
-    },
-    {
-      "ts": "2026-05-10T17:33:36.752185Z",
-      "status": "running",
-      "stage": "saving",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
-      "event": "artifact_published"
-    },
-    {
-      "ts": "2026-05-10T17:33:36.752253Z",
-      "status": "running",
-      "stage": "finished",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
+      "stage": "continuation_review",
+      "label": "第 2/4 步 · 跨栏/跨页判断",
+      "detail": "正在判断跨栏/跨页连续段",
       "event": "stage_transition"
     },
     {
-      "ts": "2026-05-10T17:33:36Z",
+      "ts": "2026-05-19T10:03:19.191992Z",
       "status": "running",
-      "stage": "finished",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
+      "stage": "continuation_review",
+      "label": "第 2/4 步 · 跨栏/跨页判断",
+      "detail": "正在判断跨栏/跨页连续段",
+      "event": "stage_progress"
+    },
+    {
+      "ts": "2026-05-19T10:03:19.192028Z",
+      "status": "running",
+      "stage": "page_policies",
+      "label": "第 2/4 步 · 页面策略",
+      "detail": "正在判断正文与保留排版内容",
+      "event": "stage_transition"
+    },
+    {
+      "ts": "2026-05-19T10:03:19.195236Z",
+      "status": "running",
+      "stage": "page_policies",
+      "label": "第 2/4 步 · 页面策略",
+      "detail": "正在判断正文与保留排版内容",
+      "event": "stage_progress"
+    },
+    {
+      "ts": "2026-05-19T10:03:19.196937Z",
+      "status": "running",
+      "stage": "translating",
+      "label": "第 2/4 步 · 翻译",
+      "detail": "正在翻译正文内容",
+      "event": "stage_transition"
+    },
+    {
+      "ts": "2026-05-19T10:03:19Z",
+      "status": "running",
+      "stage": "failed",
+      "label": "处理中",
+      "detail": "正在翻译正文内容",
       "event": "status_changed"
     },
     {
-      "ts": "2026-05-10T17:33:36Z",
+      "ts": "2026-05-19T10:03:19Z",
       "status": "succeeded",
-      "stage": "finished",
+      "stage": "translation",
       "label": "完成",
       "detail": "翻译 PDF 已生成",
       "event": "job_terminal"
     },
     {
-      "ts": "2026-05-10T17:33:36Z",
+      "ts": "2026-05-19T10:03:19Z",
       "status": "running",
-      "stage": "finished",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
+      "stage": "failed",
+      "label": "处理中",
+      "detail": "正在翻译正文内容",
       "event": "stage_updated"
     },
     {
-      "ts": "2026-05-10T17:33:36Z",
+      "ts": "2026-05-19T10:03:19Z",
       "status": "running",
-      "stage": "finished",
-      "label": "第 3/4 步 · 渲染",
-      "detail": "正在生成翻译后的 PDF",
+      "stage": "failed",
+      "label": "处理中",
+      "detail": "正在翻译正文内容",
       "event": "stage_transition"
+    },
+    {
+      "ts": "2026-05-19T10:03:19Z",
+      "status": "running",
+      "stage": "failed",
+      "label": "处理中",
+      "detail": "正在翻译正文内容",
+      "event": "job_error"
+    },
+    {
+      "ts": "2026-05-19T10:03:19Z",
+      "status": "running",
+      "stage": "translation",
+      "label": "第 2/4 步 · 翻译",
+      "detail": "正在翻译正文内容",
+      "event": "failure_classified"
     }
   ]
 }

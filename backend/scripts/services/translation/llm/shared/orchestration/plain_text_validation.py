@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import Counter
+import re
+
 from services.translation.diagnostics import TranslationDiagnosticsCollector
 from services.translation.llm.validation.errors import EnglishResidueError
 from services.translation.llm.validation.errors import TranslationProtocolError
@@ -7,8 +10,67 @@ import services.translation.llm.shared.orchestration.intentional_keep_origin as 
 import services.translation.llm.shared.orchestration.terminal_payloads as terminal_payloads
 
 
+_EN_WORD_RE = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)?")
+_EN_RESIDUE_SEGMENT_RE = re.compile(r"[A-Za-z][A-Za-z0-9\s,;:()'./%+-]{30,}")
+
+
 def _is_named_exception(exc: Exception, *names: str) -> bool:
     return type(exc).__name__ in set(names)
+
+
+def _english_words(text: str) -> list[str]:
+    return [word.lower() for word in _EN_WORD_RE.findall(str(text or ""))]
+
+
+def _english_word_overlap_ratio(words: list[str], source_words: list[str]) -> float:
+    if not words or not source_words:
+        return 0.0
+    words_counter = Counter(words)
+    source_counter = Counter(source_words)
+    shared = sum(min(words_counter[token], source_counter[token]) for token in words_counter)
+    return shared / max(1, len(words))
+
+
+def _trim_copied_english_tail(
+    source_text: str,
+    translated_text: str,
+    *,
+    zh_char_count_fn,
+) -> str | None:
+    text = str(translated_text or "").strip()
+    if not text:
+        return None
+    if zh_char_count_fn(text) < 6:
+        return None
+
+    source_words = _english_words(source_text)
+    if len(source_words) < 8:
+        return None
+
+    for match in _EN_RESIDUE_SEGMENT_RE.finditer(text):
+        segment = " ".join((match.group(0) or "").split())
+        segment_words = _english_words(segment)
+        if len(segment_words) < 8:
+            continue
+
+        prefix = text[: match.start()]
+        if zh_char_count_fn(prefix) < 4:
+            continue
+
+        overlap_ratio = _english_word_overlap_ratio(segment_words, source_words)
+        if overlap_ratio < 0.55:
+            continue
+
+        suffix = text[match.end() :]
+        if suffix and re.search(r"[A-Za-z\u4e00-\u9fff0-9]", suffix):
+            continue
+
+        cleaned = prefix.rstrip(" \t\r\n-—:;,.")
+        if zh_char_count_fn(cleaned) < 4:
+            continue
+        return cleaned
+
+    return None
 
 
 def try_salvage_protocol_shell_error(
@@ -54,38 +116,36 @@ def try_salvage_partial_english_residue(
     exc: EnglishResidueError,
     context,
     zh_char_count_fn,
-    is_direct_math_mode_fn,
-    is_continuation_or_group_unit_fn,
-    has_formula_placeholders_fn,
     canonicalize_batch_result_fn,
+    validate_batch_result_fn,
     result_entry_fn,
     restore_runtime_term_tokens_fn,
     attach_result_metadata_fn,
 ) -> dict[str, dict[str, str]] | None:
-    translated_text = str(getattr(exc, "translated_text", "") or "").strip()
-    if not translated_text:
-        return None
-    if zh_char_count_fn(translated_text) < 4:
-        return None
-    if not (
-        is_direct_math_mode_fn(item)
-        or is_continuation_or_group_unit_fn(item)
-        or has_formula_placeholders_fn(item)
-    ):
-        return None
-    result = canonicalize_batch_result_fn(
-        [item],
-        {str(item.get("item_id", "") or ""): result_entry_fn("translate", translated_text)},
+    cleaned_text = _trim_copied_english_tail(
+        str(getattr(exc, "source_text", "") or ""),
+        str(getattr(exc, "translated_text", "") or ""),
+        zh_char_count_fn=zh_char_count_fn,
     )
-    result = restore_runtime_term_tokens_fn(result, item=item)
-    return attach_result_metadata_fn(
-        result,
-        item=item,
-        context=context,
-        route_path=["block_level", "english_residue_salvage"],
-        output_mode_path=["plain_text"],
-        degradation_reason="english_residue_partial_accept",
-    )
+    if not cleaned_text:
+        return None
+    try:
+        result = canonicalize_batch_result_fn(
+            [item],
+            {str(item.get("item_id", "") or ""): result_entry_fn("translate", cleaned_text)},
+        )
+        validate_batch_result_fn([item], result)
+        result = restore_runtime_term_tokens_fn(result, item=item)
+        return attach_result_metadata_fn(
+            result,
+            item=item,
+            context=context,
+            route_path=["block_level", "english_residue_tail_trim"],
+            output_mode_path=["plain_text"],
+            degradation_reason="english_residue_tail_trimmed",
+        )
+    except Exception:
+        return None
 
 
 def finalize_plain_text_validation_failure(
@@ -106,16 +166,16 @@ def finalize_plain_text_validation_failure(
         if salvaged is not None:
             if diagnostics is not None:
                 diagnostics.emit(
-                    kind="english_residue_salvaged",
+                    kind="english_residue_tail_trimmed",
                     item_id=str(item.get("item_id", "") or ""),
                     page_idx=item.get("page_idx"),
                     severity="warning",
-                    message="Accepted partially translated output after repeated English-residue validation failure",
-                    retryable=False,
+                    message="Trimmed copied English residue tail after repeated English-residue validation failure",
+                    retryable=True,
                 )
             if request_label:
                 print(
-                    f"{request_label}: accepted partially translated output after repeated English-residue validation failure",
+                    f"{request_label}: trimmed copied English residue tail after repeated validation failure",
                     flush=True,
                 )
             return salvaged

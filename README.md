@@ -50,6 +50,21 @@ export RUST_API_KEYS="your-api-key"
 ./target/release/rust_api
 ```
 
+## Secret Safety Before GitHub Push
+
+```bash
+# 1) Use templates only
+cp .env.example .env
+
+# 2) Enable repository git hooks (blocks secrets in commits)
+git config core.hooksPath .githooks
+
+# 3) If a secret file was tracked before, untrack it
+git rm --cached docker/delivery/docker/app.env docker/delivery/docker/web.env docker/delivery/docker/auth.local.json
+```
+
+Never commit real values from `.env`, `docker/delivery/docker/*.env`, or `docker/delivery/docker/auth.local.json`.
+
 ## Architecture
 
 ```

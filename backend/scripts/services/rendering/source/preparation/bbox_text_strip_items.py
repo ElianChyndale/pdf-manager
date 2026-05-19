@@ -12,10 +12,15 @@ from services.rendering.source.preparation.bbox_text_strip_policy_adapter import
 from services.rendering.source.preparation.bbox_text_strip_policy_adapter import should_strip_item_text
 
 
-def iter_strip_item_rects_for_page(page: fitz.Page, translated_items: list[dict]) -> Iterator[tuple[dict, fitz.Rect]]:
+def iter_strip_item_rects_for_page(
+    page: fitz.Page,
+    translated_items: list[dict],
+    *,
+    strict_replace: bool = False,
+) -> Iterator[tuple[dict, fitz.Rect]]:
     skip_item_ids = formula_neighbor_item_ids(translated_items)
     for item in translated_items:
-        if not should_strip_item_text(item, skip_item_ids=skip_item_ids):
+        if not should_strip_item_text(item, skip_item_ids=skip_item_ids, strict_replace=strict_replace):
             continue
         rect = ocr_bbox_to_pdf_rect(page, item.get("bbox", []))
         if rect is not None:
@@ -31,10 +36,10 @@ def iter_formula_item_rects_for_page(page: fitz.Page, translated_items: list[dic
             yield item, rect
 
 
-def build_source_item_rects(translated_items: list[dict]) -> list[fitz.Rect]:
+def build_source_item_rects(translated_items: list[dict], *, strict_replace: bool = False) -> list[fitz.Rect]:
     rects: list[fitz.Rect] = []
     for item in translated_items:
-        if not should_strip_item_text(item, skip_item_ids=None):
+        if not should_strip_item_text(item, skip_item_ids=None, strict_replace=strict_replace):
             continue
         bbox = item.get("bbox", [])
         if len(bbox) != 4:

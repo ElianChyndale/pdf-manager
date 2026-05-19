@@ -5,6 +5,7 @@ import fitz
 from services.rendering.policy import formula_neighbor_text_item_ids
 from services.rendering.policy import item_has_formula_region
 from services.rendering.policy import item_should_bbox_text_strip
+from services.rendering.policy import item_should_strict_replace_text_strip
 from services.rendering.policy import page_should_skip_bbox_text_strip
 from services.rendering.policy.formula_guard import expanded_formula_guard
 from services.rendering.policy.formula_guard import expanded_formula_guards
@@ -23,7 +24,14 @@ def has_formula_region(item: dict) -> bool:
     return item_has_formula_region(item)
 
 
-def should_strip_item_text(item: dict, *, skip_item_ids: set[str] | None = None) -> bool:
+def should_strip_item_text(
+    item: dict,
+    *,
+    skip_item_ids: set[str] | None = None,
+    strict_replace: bool = False,
+) -> bool:
+    if strict_replace:
+        return item_should_strict_replace_text_strip(item, skip_item_ids=skip_item_ids)
     return item_should_bbox_text_strip(item, skip_item_ids=skip_item_ids)
 
 

@@ -8,6 +8,7 @@ from services.rendering.policy.cleanup_policy import item_has_formula_region
 from services.rendering.policy.cleanup_policy import item_render_output_text
 from services.rendering.policy.cleanup_policy import item_render_source_text
 from services.rendering.policy.cleanup_policy import item_should_bbox_text_strip
+from services.rendering.policy.cleanup_policy import item_should_strict_replace_text_strip
 from services.rendering.policy.cleanup_policy import page_should_skip_bbox_text_strip
 from services.rendering.policy.cleanup_policy import page_has_formula_region
 from services.rendering.policy.compat import item_cleanup_mode
@@ -44,6 +45,7 @@ __all__ = [
     "item_render_source_text",
     "item_requires_visual_cover_only",
     "item_should_bbox_text_strip",
+    "item_should_strict_replace_text_strip",
     "item_uses_white_overlay_fill",
     "page_has_formula_region",
     "page_should_skip_bbox_text_strip",

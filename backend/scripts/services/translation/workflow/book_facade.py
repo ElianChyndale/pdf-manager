@@ -38,7 +38,7 @@ class BookRequest:
     compile_workers: int | None = None
     typst_font_family: str = ""
     pdf_compress_dpi: int = 144
-    source_cleanup_strategy: str = "pikepdf_text_strip"
+    source_cleanup_strategy: str = "strict_replace"
     invocation: dict[str, Any] | None = None
 
 
@@ -138,7 +138,7 @@ class TranslationRequest:
     render_prewarm_artifacts_dir: Path | None = None
     render_prewarm_mode: str = "auto"
     render_prewarm_pdf_compress_dpi: int = 0
-    render_prewarm_source_cleanup_strategy: str = "pikepdf_text_strip"
+    render_prewarm_source_cleanup_strategy: str = "strict_replace"
 
 
 @dataclass(frozen=True)

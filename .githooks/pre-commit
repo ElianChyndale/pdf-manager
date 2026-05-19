@@ -1,19 +1,52 @@
-#!/usr/bin/env sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT"
+has_rg=0
+if command -v rg >/dev/null 2>&1; then
+  has_rg=1
+fi
 
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
-
-if [ -z "$STAGED_FILES" ]; then
+files="$(git diff --cached --name-only --diff-filter=ACM)"
+if [ -z "${files}" ]; then
   exit 0
 fi
 
-if ! printf '%s\n' "$STAGED_FILES" | grep -Eq '^(frontend/|desktop/scripts/prepare-app\.mjs|desktop/scripts/check-frontend-bundle\.mjs|desktop/package\.json)'; then
-  exit 0
+pattern='AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|api[_-]?[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']|secret[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']|token[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']|password[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']'
+secret_file_pattern='(^|/)(\.env(\..*)?|.*\.pem|.*\.p12|.*\.pfx|.*\.key|id_rsa|id_ed25519)$'
+
+if [ "$has_rg" -eq 1 ]; then
+  files_match_cmd() { rg -n "$1"; }
+  content_scan_cmd() { xargs rg -n -E "$1"; }
+else
+  files_match_cmd() { grep -nE "$1"; }
+  content_scan_cmd() { xargs grep -nEI "$1"; }
 fi
 
-printf '%s\n' "[pre-commit] frontend/desktop sync-sensitive files changed."
-printf '%s\n' "[pre-commit] Run before pushing: npm --prefix desktop run verify-frontend-sync"
-printf '%s\n' "[pre-commit] This hook no longer rewrites generated desktop frontend files."
+if echo "${files}" | files_match_cmd "${secret_file_pattern}" >/dev/null; then
+  echo "[pre-commit] Blocked: staged secret-bearing file detected (.env/.key/.pem/etc)."
+  echo "Unstage the file and use an example template instead."
+  exit 1
+fi
+
+if echo "${files}" | content_scan_cmd "${pattern}" >/dev/null 2>&1; then
+  echo "[pre-commit] Blocked: possible secret found in staged content."
+  echo "Review staged files with: git diff --cached"
+  exit 1
+fi
+
+# Preserve existing frontend/desktop sync reminder behavior.
+if [ "$has_rg" -eq 1 ]; then
+  if echo "${files}" | rg -n '^(frontend/|desktop/scripts/prepare-app\.mjs|desktop/scripts/check-frontend-bundle\.mjs|desktop/package\.json)' >/dev/null; then
+    echo "[pre-commit] frontend/desktop sync-sensitive files changed."
+    echo "[pre-commit] Run before pushing: npm --prefix desktop run verify-frontend-sync"
+    echo "[pre-commit] This hook no longer rewrites generated desktop frontend files."
+  fi
+else
+  if echo "${files}" | grep -nE '^(frontend/|desktop/scripts/prepare-app\.mjs|desktop/scripts/check-frontend-bundle\.mjs|desktop/package\.json)' >/dev/null; then
+    echo "[pre-commit] frontend/desktop sync-sensitive files changed."
+    echo "[pre-commit] Run before pushing: npm --prefix desktop run verify-frontend-sync"
+    echo "[pre-commit] This hook no longer rewrites generated desktop frontend files."
+  fi
+fi
+
+exit 0

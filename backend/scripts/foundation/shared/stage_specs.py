@@ -249,7 +249,7 @@ class TranslateStageSpec:
             render_prewarm_mode=str(params_payload.get("render_prewarm_mode", "auto") or "auto"),
             render_prewarm_pdf_compress_dpi=int(params_payload.get("render_prewarm_pdf_compress_dpi", 0) or 0),
             render_prewarm_source_cleanup_strategy=str(
-                params_payload.get("render_prewarm_source_cleanup_strategy", "pikepdf_text_strip") or "pikepdf_text_strip"
+                params_payload.get("render_prewarm_source_cleanup_strategy", "strict_replace") or "strict_replace"
             ).strip().lower(),
         )
         return cls(
@@ -349,7 +349,7 @@ class RenderStageSpec:
             inner_bbox_dense_shrink_x=float(params_payload.get("inner_bbox_dense_shrink_x", 0.0) or 0.0),
             inner_bbox_dense_shrink_y=float(params_payload.get("inner_bbox_dense_shrink_y", 0.0) or 0.0),
             font_unify_mode=str(params_payload.get("font_unify_mode", "role_min") or "role_min").strip().lower(),
-            source_cleanup_strategy=str(params_payload.get("source_cleanup_strategy", "pikepdf_text_strip") or "pikepdf_text_strip").strip().lower(),
+            source_cleanup_strategy=str(params_payload.get("source_cleanup_strategy", "strict_replace") or "strict_replace").strip().lower(),
             model=str(params_payload.get("model", "") or ""),
             base_url=str(params_payload.get("base_url", "") or ""),
             credential_ref=str(params_payload.get("credential_ref", "") or ""),
@@ -526,7 +526,7 @@ class ProviderStageSpec:
             inner_bbox_dense_shrink_x=float(render_payload.get("inner_bbox_dense_shrink_x", 0.0) or 0.0),
             inner_bbox_dense_shrink_y=float(render_payload.get("inner_bbox_dense_shrink_y", 0.0) or 0.0),
             font_unify_mode=str(render_payload.get("font_unify_mode", "role_min") or "role_min").strip().lower(),
-            source_cleanup_strategy=str(render_payload.get("source_cleanup_strategy", "pikepdf_text_strip") or "pikepdf_text_strip").strip().lower(),
+            source_cleanup_strategy=str(render_payload.get("source_cleanup_strategy", "strict_replace") or "strict_replace").strip().lower(),
         )
         return cls(
             schema_version=schema_version,
@@ -667,7 +667,7 @@ class BookStageSpec:
             inner_bbox_dense_shrink_x=float(render_payload.get("inner_bbox_dense_shrink_x", 0.0) or 0.0),
             inner_bbox_dense_shrink_y=float(render_payload.get("inner_bbox_dense_shrink_y", 0.0) or 0.0),
             font_unify_mode=str(render_payload.get("font_unify_mode", "role_min") or "role_min").strip().lower(),
-            source_cleanup_strategy=str(render_payload.get("source_cleanup_strategy", "pikepdf_text_strip") or "pikepdf_text_strip").strip().lower(),
+            source_cleanup_strategy=str(render_payload.get("source_cleanup_strategy", "strict_replace") or "strict_replace").strip().lower(),
         )
         return cls(
             schema_version=schema_version,

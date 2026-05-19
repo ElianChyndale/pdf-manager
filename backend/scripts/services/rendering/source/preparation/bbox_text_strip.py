@@ -17,6 +17,7 @@ def build_bbox_text_stripped_pdf_copy(
     candidates: BBoxTextStripCandidates | None = None,
     recurse_forms: bool | None = None,
     skip_formula_pages: bool = True,
+    strict_replace: bool = False,
 ) -> BBoxTextStripResult:
     if not translated_pages:
         return BBoxTextStripResult(changed=False)
@@ -26,6 +27,7 @@ def build_bbox_text_stripped_pdf_copy(
         source_pdf_path=source_pdf_path,
         translated_pages=translated_pages,
         skip_formula_pages=skip_formula_pages,
+        strict_replace=strict_replace,
     )
     page_rects = candidates.fitz_page_rects()
     page_protected_rects = candidates.fitz_page_protected_rects()

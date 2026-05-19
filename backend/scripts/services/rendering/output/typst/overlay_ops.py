@@ -6,6 +6,7 @@ import time
 
 import fitz
 
+from foundation.config import layout
 from foundation.config import fonts
 from services.rendering.document.pikepdf_overlay import overlay_pdf_pages_with_pikepdf
 from services.rendering.output.typst.compiler import TypstCompileError
@@ -48,7 +49,7 @@ def _can_use_pikepdf_book_overlay(
         return False
     if use_typst_overlay_fill_only:
         return True
-    if source_cleanup_strategy == "pikepdf_text_strip":
+    if layout.use_bbox_text_strip_cleanup(source_cleanup_strategy):
         return True
     return all(
         page_idx in source_text_precleaned_page_indices or not translated_pages.get(page_idx)

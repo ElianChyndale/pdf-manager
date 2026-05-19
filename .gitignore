@@ -51,5 +51,20 @@ VERSION
 .codex/
 
 # Config files with secrets (use .example files as templates)
+.env
+.env.local
+.env.*
+!.env.example
+*.local.js
+.claude/*.local.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 docker/delivery/docker/web.env
+docker/delivery/docker/app.env
 docker/delivery/docker/auth.local.json
+docker/delivery/docker/*.env
+!docker/delivery/docker/*.env.example

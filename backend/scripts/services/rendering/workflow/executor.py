@@ -134,6 +134,10 @@ def execute_render_plan(
             "source_text_precleaned_pages": len(render_source_pdf.source_text_precleaned_page_indices),
             "bbox_text_stripped_pages": len(render_source_pdf.bbox_text_stripped_page_indices),
             "bbox_text_strip_skipped_pages": len(render_source_pdf.bbox_text_strip_skipped_page_indices),
+            "strict_replace_pages_targeted": len(render_source_pdf.strict_replace_pages_targeted),
+            "strict_replace_pages_escalated": len(render_source_pdf.strict_replace_pages_escalated),
+            "strict_replace_pages_verified_clean": len(render_source_pdf.strict_replace_pages_verified_clean),
+            "strict_replace_pages_failed": len(render_source_pdf.strict_replace_pages_failed),
         }
         for temp_source_path in render_source_pdf.temp_paths:
             temp_source_path.unlink(missing_ok=True)
@@ -146,7 +150,7 @@ def _typst_cover_fallback_page_indices(
     precleaned_page_indices: frozenset[int],
     skipped_page_indices: frozenset[int],
 ) -> frozenset[int]:
-    if cleanup_strategy == "pikepdf_text_strip":
+    if layout.use_bbox_text_strip_cleanup(cleanup_strategy):
         return frozenset(page_idx for page_idx, items in translated_pages.items() if items) - precleaned_page_indices
     return skipped_page_indices
 

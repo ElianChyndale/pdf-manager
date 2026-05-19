@@ -44,7 +44,7 @@ class RenderPrewarmSpec:
     start_page: int
     end_page: int
     pdf_compress_dpi: int
-    source_cleanup_strategy: str = "pikepdf_text_strip"
+    source_cleanup_strategy: str = "strict_replace"
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def build_render_prewarm_fingerprint(
     start_page: int,
     end_page: int,
     pdf_compress_dpi: int,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
 ) -> dict[str, Any]:
     source_pdf_path = Path(source_pdf_path).resolve()
     stat = source_pdf_path.stat()
@@ -179,7 +179,7 @@ def try_load_prewarmed_render_source_pdf(
     start_page: int,
     end_page: int,
     pdf_compress_dpi: int,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
 ) -> RenderSourcePdf | None:
     manifest = _load_matching_manifest(
         manifest_path=manifest_path,
@@ -207,6 +207,10 @@ def try_load_prewarmed_render_source_pdf(
             bbox_text_stripped_page_indices=frozenset(_int_list(render_source.get("bbox_text_stripped_page_indices"))),
             bbox_text_strip_skipped_page_indices=frozenset(_int_list(render_source.get("bbox_text_strip_skipped_page_indices"))),
             source_text_precleaned_page_indices=frozenset(_int_list(render_source.get("source_text_precleaned_page_indices"))),
+            strict_replace_pages_targeted=frozenset(_int_list(render_source.get("strict_replace_pages_targeted"))),
+            strict_replace_pages_escalated=frozenset(_int_list(render_source.get("strict_replace_pages_escalated"))),
+            strict_replace_pages_verified_clean=frozenset(_int_list(render_source.get("strict_replace_pages_verified_clean"))),
+            strict_replace_pages_failed=frozenset(_int_list(render_source.get("strict_replace_pages_failed"))),
         )
     except Exception as exc:
         print(f"render prewarm: load failed {type(exc).__name__}: {exc}; fallback", flush=True)
@@ -222,7 +226,7 @@ def try_load_render_payload_prewarm(
     start_page: int,
     end_page: int,
     pdf_compress_dpi: int,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
 ) -> RenderPayloadPrewarm | None:
     manifest = _load_matching_manifest(
         manifest_path=manifest_path,
@@ -276,7 +280,7 @@ def _load_matching_manifest(
     start_page: int,
     end_page: int,
     pdf_compress_dpi: int,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
 ) -> dict[str, Any] | None:
     if manifest_path is None or not Path(manifest_path).exists():
         return None
@@ -372,6 +376,10 @@ def _build_manifest(
             "bbox_text_stripped_page_indices": sorted(prepared.bbox_text_stripped_page_indices),
             "bbox_text_strip_skipped_page_indices": sorted(prepared.bbox_text_strip_skipped_page_indices),
             "source_text_precleaned_page_indices": sorted(prepared.source_text_precleaned_page_indices),
+            "strict_replace_pages_targeted": sorted(prepared.strict_replace_pages_targeted),
+            "strict_replace_pages_escalated": sorted(prepared.strict_replace_pages_escalated),
+            "strict_replace_pages_verified_clean": sorted(prepared.strict_replace_pages_verified_clean),
+            "strict_replace_pages_failed": sorted(prepared.strict_replace_pages_failed),
         },
         "payload_prewarm": payload_prewarm or {},
         "elapsed_seconds": round(float(elapsed), 3),
@@ -383,7 +391,7 @@ def _build_payload_prewarm(
     source_pdf_path: Path,
     translated_pages: dict[int, list[dict]],
     manifest_path: Path,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
 ) -> dict[str, Any]:
     started = time.perf_counter()
     prepared_pages = apply_render_pages_policy_fields(
@@ -417,6 +425,7 @@ def _build_payload_prewarm(
                 source_pdf_path=source_pdf_path,
                 translated_pages=translated_pages,
                 skip_formula_pages=False,
+                strict_replace=layout.use_strict_replace_cleanup(source_cleanup_strategy),
             )
             bbox_payload = _bbox_candidates_to_manifest(bbox_candidates)
         except Exception as exc:
@@ -462,6 +471,10 @@ def _bbox_candidates_to_manifest(candidates: BBoxTextStripCandidates) -> dict[st
             str(page_idx): [list(rect) for rect in rects]
             for page_idx, rects in sorted(candidates.page_rects.items())
         },
+        "page_target_rects": {
+            str(page_idx): [list(rect) for rect in rects]
+            for page_idx, rects in sorted((candidates.page_target_rects or {}).items())
+        },
         "page_protected_rects": {
             str(page_idx): [list(rect) for rect in rects]
             for page_idx, rects in sorted((candidates.page_protected_rects or {}).items())
@@ -478,6 +491,7 @@ def _bbox_candidates_from_manifest(value: object) -> BBoxTextStripCandidates | N
     if payload.get("algorithm") != BBOX_TEXT_STRIP_ALGORITHM_VERSION:
         return None
     page_rects: dict[int, tuple[tuple[float, float, float, float], ...]] = {}
+    page_target_rects: dict[int, tuple[tuple[float, float, float, float], ...]] = {}
     page_protected_rects: dict[int, tuple[tuple[float, float, float, float], ...]] = {}
     for page_key, raw_rects in dict(payload.get("page_rects") or {}).items():
         try:
@@ -491,6 +505,18 @@ def _bbox_candidates_from_manifest(value: object) -> BBoxTextStripCandidates | N
                 rects.append(rect)
         if rects:
             page_rects[page_idx] = tuple(rects)
+    for page_key, raw_rects in dict(payload.get("page_target_rects") or {}).items():
+        try:
+            page_idx = int(page_key)
+        except Exception:
+            continue
+        rects: list[tuple[float, float, float, float]] = []
+        for raw_rect in raw_rects if isinstance(raw_rects, list) else []:
+            rect = _rect_tuple_from_value(raw_rect)
+            if rect is not None:
+                rects.append(rect)
+        if rects:
+            page_target_rects[page_idx] = tuple(rects)
     for page_key, raw_rects in dict(payload.get("page_protected_rects") or {}).items():
         try:
             page_idx = int(page_key)
@@ -503,10 +529,16 @@ def _bbox_candidates_from_manifest(value: object) -> BBoxTextStripCandidates | N
                 rects.append(rect)
         if rects:
             page_protected_rects[page_idx] = tuple(rects)
-    if not page_rects and not payload.get("skipped_complex_page_indices") and not payload.get("skipped_no_text_overlap_page_indices"):
+    if (
+        not page_rects
+        and not page_target_rects
+        and not payload.get("skipped_complex_page_indices")
+        and not payload.get("skipped_no_text_overlap_page_indices")
+    ):
         return None
     return BBoxTextStripCandidates(
         page_rects=page_rects,
+        page_target_rects=page_target_rects,
         page_protected_rects=page_protected_rects,
         pages_skipped_complex=int(payload.get("pages_skipped_complex") or 0),
         pages_skipped_no_text_overlap=int(payload.get("pages_skipped_no_text_overlap") or 0),

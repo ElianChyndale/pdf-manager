@@ -25,4 +25,4 @@ class RenderExecutionContext:
     bbox_text_stripped_page_indices: frozenset[int] = frozenset()
     bbox_text_strip_skipped_page_indices: frozenset[int] = frozenset()
     source_text_precleaned_page_indices: frozenset[int] = frozenset()
-    source_cleanup_strategy: str = "pikepdf_text_strip"
+    source_cleanup_strategy: str = "strict_replace"

@@ -92,7 +92,7 @@ def run_book_pipeline(
     compile_workers: int | None = None,
     typst_font_family: str = fonts.TYPST_DEFAULT_FONT_FAMILY,
     pdf_compress_dpi: int = runtime.DEFAULT_PDF_COMPRESS_DPI,
-    source_cleanup_strategy: str = "pikepdf_text_strip",
+    source_cleanup_strategy: str = "strict_replace",
     invocation: dict | None = None,
 ) -> dict:
     total_started = time.perf_counter()

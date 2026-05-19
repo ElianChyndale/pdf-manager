@@ -6,11 +6,13 @@ INNER_BBOX_SHRINK_Y = 0.0
 INNER_BBOX_DENSE_SHRINK_X = 0.0
 INNER_BBOX_DENSE_SHRINK_Y = 0.0
 FONT_UNIFY_MODE = "role_min"
-SOURCE_CLEANUP_STRATEGY = "pikepdf_text_strip"
+SOURCE_CLEANUP_STRATEGY = "strict_replace"
 SOURCE_CLEANUP_TYPST_FILL = "typst_fill"
 SOURCE_CLEANUP_PIKEPDF_TEXT_STRIP = "pikepdf_text_strip"
+SOURCE_CLEANUP_STRICT_REPLACE = "strict_replace"
 SOURCE_CLEANUP_BBOX_TEXT_STRIP_ALIASES = {
     SOURCE_CLEANUP_PIKEPDF_TEXT_STRIP,
+    SOURCE_CLEANUP_STRICT_REPLACE,
     "bbox_text_strip",
     "legacy",
 }
@@ -72,6 +74,11 @@ def use_typst_fill_cleanup() -> bool:
 def use_bbox_text_strip_cleanup(strategy: str | None = None) -> bool:
     resolved = normalize_source_cleanup_strategy(strategy) if strategy is not None else SOURCE_CLEANUP_STRATEGY
     return resolved in SOURCE_CLEANUP_BBOX_TEXT_STRIP_ALIASES
+
+
+def use_strict_replace_cleanup(strategy: str | None = None) -> bool:
+    resolved = normalize_source_cleanup_strategy(strategy) if strategy is not None else SOURCE_CLEANUP_STRATEGY
+    return resolved == SOURCE_CLEANUP_STRICT_REPLACE
 
 
 def use_redact_restore_formula_cleanup(strategy: str | None = None) -> bool:

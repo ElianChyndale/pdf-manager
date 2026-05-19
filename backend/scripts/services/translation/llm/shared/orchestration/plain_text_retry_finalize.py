@@ -4,7 +4,6 @@ from services.translation.diagnostics import TranslationDiagnosticsCollector
 from services.translation.llm.placeholder_transform import has_formula_placeholders
 from services.translation.llm.result_payload import result_entry
 from services.translation.llm.shared.control_context import TranslationControlContext
-from services.translation.llm.shared.orchestration.common import is_continuation_or_group_unit
 from services.translation.llm.shared.orchestration.common import sentence_level_fallback_allowed
 from services.translation.llm.shared.orchestration.common import should_keep_origin_on_empty_translation
 from services.translation.llm.shared.orchestration.common import should_keep_origin_on_protocol_shell
@@ -18,7 +17,6 @@ from services.translation.llm.shared.orchestration.plain_text_retry_runtime impo
 from services.translation.llm.shared.orchestration.plain_text_validation import finalize_plain_text_validation_failure
 from services.translation.llm.shared.orchestration.plain_text_validation import try_salvage_partial_english_residue
 from services.translation.llm.shared.orchestration.transport import defer_transport_retry
-from services.translation.llm.validation.english_residue import is_direct_math_mode
 from services.translation.llm.validation.english_residue import should_force_translate_body_text
 from services.translation.llm.validation.errors import EmptyTranslationError
 
@@ -91,10 +89,8 @@ def finalize_plain_text_failure(
             exc=exc,
             context=context,
             zh_char_count_fn=zh_char_count,
-            is_direct_math_mode_fn=is_direct_math_mode,
-            is_continuation_or_group_unit_fn=is_continuation_or_group_unit,
-            has_formula_placeholders_fn=has_formula_placeholders,
             canonicalize_batch_result_fn=runtime.canonicalize_batch_result_fn,
+            validate_batch_result_fn=runtime.validate_batch_result_fn,
             result_entry_fn=result_entry,
             restore_runtime_term_tokens_fn=restore_runtime_term_tokens,
             attach_result_metadata_fn=attach_result_metadata,
