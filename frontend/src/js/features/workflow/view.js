@@ -23,6 +23,19 @@ export function setDeveloperDialogValues(config) {
   if ($("job-glossary-id")) {
     $("job-glossary-id").value = config.glossaryId || "";
   }
+  if ($("developer-rule-profile")) {
+    $("developer-rule-profile").value = config.ruleProfileName;
+  }
+  if ($("developer-legacy-translation-upload-id")) {
+    $("developer-legacy-translation-upload-id").value = config.legacyTranslationUploadId || "";
+  }
+  const outputModes = new Set(config.outputModes || []);
+  if ($("developer-output-bilingual-overlay")) {
+    $("developer-output-bilingual-overlay").checked = outputModes.has("bilingual_overlay");
+  }
+  if ($("developer-output-dual")) {
+    $("developer-output-dual").checked = outputModes.has("dual");
+  }
   $("developer-workers").value = `${config.workers}`;
   $("developer-batch-size").value = `${config.batchSize}`;
   $("developer-classify-batch-size").value = `${config.classifyBatchSize}`;
@@ -60,6 +73,12 @@ export function readDeveloperDialogValues(defaults) {
     model: $("developer-model")?.value?.trim() || defaults.model,
     baseUrl: $("developer-base-url")?.value?.trim() || defaults.baseUrl,
     glossaryId: $("job-glossary-id")?.value?.trim() || $("developer-glossary-id")?.value?.trim() || "",
+    ruleProfileName: $("developer-rule-profile")?.value || "general_sci",
+    legacyTranslationUploadId: $("developer-legacy-translation-upload-id")?.value?.trim() || "",
+    outputModes: [
+      $("developer-output-bilingual-overlay")?.checked ? "bilingual_overlay" : "",
+      $("developer-output-dual")?.checked ? "dual" : "",
+    ].filter(Boolean),
     workers: positiveInteger($("developer-workers")?.value, defaults.workers),
     batchSize: positiveInteger($("developer-batch-size")?.value, defaults.batchSize),
     classifyBatchSize: positiveInteger($("developer-classify-batch-size")?.value, defaults.classifyBatchSize),

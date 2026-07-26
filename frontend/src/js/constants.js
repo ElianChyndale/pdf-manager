@@ -6,6 +6,7 @@ export const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 export const DEFAULT_LANGUAGE = "ch";
 export const DEFAULT_RULE_PROFILE = "general_sci";
 export const DEFAULT_RENDER_MODE = "auto";
+export const DEFAULT_OUTPUT_MODES = Object.freeze([]);
 export const DEFAULT_TYPST_FONT_FAMILY = "Source Han Serif SC";
 export const DEFAULT_PDF_COMPRESS_DPI = 0;
 export const DEFAULT_TRANSLATED_PDF_NAME = "";

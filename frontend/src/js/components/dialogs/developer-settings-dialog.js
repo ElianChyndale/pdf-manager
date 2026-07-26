@@ -60,6 +60,17 @@ class DeveloperSettingsDialog extends HTMLElement {
                       <option value="">不使用术语表</option>
                     </select>
                   </label>
+                  <label>
+                    <span>翻译规则</span>
+                    <select id="developer-rule-profile">
+                      <option value="general_sci">论文与通用科技</option>
+                      <option value="engineering_drawing">工程图纸（保留原文并生成中文伴随项）</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>旧译稿 Upload ID（可选）</span>
+                    <input id="developer-legacy-translation-upload-id" type="text" autocomplete="off" placeholder="用于原稿—旧稿缺漏审计" />
+                  </label>
                 </div>
               </section>
 
@@ -101,6 +112,17 @@ class DeveloperSettingsDialog extends HTMLElement {
                       </span>
                       <input id="developer-timeout-seconds" type="number" min="1" step="1" inputmode="numeric" />
                     </label>
+                    <div class="developer-span-full">
+                      <span class="developer-label">工程图纸输出（不勾选时保持原有单输出行为）</span>
+                      <label class="credential-toggle">
+                        <input id="developer-output-bilingual-overlay" type="checkbox" value="bilingual_overlay" />
+                        <span>同页双语版</span>
+                      </label>
+                      <label class="credential-toggle">
+                        <input id="developer-output-dual" type="checkbox" value="dual" />
+                        <span>原文＋中文并排版</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
               </section>

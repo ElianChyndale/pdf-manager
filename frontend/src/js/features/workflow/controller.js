@@ -2,6 +2,12 @@ import { $ } from "../../dom.js";
 import { DEFAULT_FILE_LABEL } from "../../constants.js";
 import { getOcrProviderDefinition, normalizeOcrProvider } from "../../provider-config.js";
 import {
+  normalizeOutputModes,
+  normalizeRuleProfile,
+  optionalLegacyTranslationSource,
+  optionalRenderOutputModes,
+} from "./payload-options.js";
+import {
   applyMockUploadView,
   applyWorkflowUploadView,
   closeDeveloperDialog,
@@ -47,6 +53,7 @@ export function mountWorkflowFeature({
     DEFAULT_MODE,
     DEFAULT_RULE_PROFILE,
     DEFAULT_RENDER_MODE,
+    DEFAULT_OUTPUT_MODES,
     DEFAULT_TYPST_FONT_FAMILY,
     DEFAULT_PDF_COMPRESS_DPI,
     DEFAULT_TRANSLATED_PDF_NAME,
@@ -89,6 +96,14 @@ export function mountWorkflowFeature({
       model: saved.model || defaultModelName(),
       baseUrl: saved.baseUrl || defaultModelBaseUrl(),
       glossaryId: `${saved.glossaryId || saved.glossary_id || ""}`.trim(),
+      ruleProfileName: normalizeRuleProfile(
+        saved.ruleProfileName || saved.rule_profile_name,
+        DEFAULT_RULE_PROFILE,
+      ),
+      legacyTranslationUploadId: `${
+        saved.legacyTranslationUploadId || saved.legacy_translation_upload_id || ""
+      }`.trim(),
+      outputModes: normalizeOutputModes(saved.outputModes || saved.output_modes || DEFAULT_OUTPUT_MODES),
       workers: positiveInteger(saved.workers, DEFAULT_WORKERS),
       batchSize: positiveInteger(saved.batchSize, DEFAULT_BATCH_SIZE),
       classifyBatchSize: positiveInteger(saved.classifyBatchSize, DEFAULT_CLASSIFY_BATCH_SIZE),
@@ -243,6 +258,9 @@ export function mountWorkflowFeature({
       model: values.model,
       baseUrl: values.baseUrl,
       glossaryId: values.glossaryId,
+      ruleProfileName: values.ruleProfileName,
+      legacyTranslationUploadId: values.legacyTranslationUploadId,
+      outputModes: values.outputModes,
       workers: values.workers,
       batchSize: values.batchSize,
       classifyBatchSize: values.classifyBatchSize,
@@ -265,7 +283,10 @@ export function mountWorkflowFeature({
 
   function buildSourcePayload(workflow, developerConfig) {
     return workflowNeedsUpload(workflow)
-      ? { upload_id: state.uploadId }
+      ? {
+          upload_id: state.uploadId,
+          ...optionalLegacyTranslationSource(developerConfig.legacyTranslationUploadId),
+        }
       : { artifact_job_id: developerConfig.renderSourceJobId };
   }
 
@@ -299,7 +320,7 @@ export function mountWorkflowFeature({
       workers: developerConfig.workers,
       batch_size: developerConfig.batchSize,
       classify_batch_size: developerConfig.classifyBatchSize,
-      rule_profile_name: DEFAULT_RULE_PROFILE,
+      rule_profile_name: developerConfig.ruleProfileName,
       custom_rules_text: "",
       glossary_id: selectedGlossaryId,
       glossary_entries: [],
@@ -350,6 +371,7 @@ export function mountWorkflowFeature({
       inner_bbox_dense_shrink_x: DEFAULT_INNER_BBOX_DENSE_SHRINK_X,
       inner_bbox_dense_shrink_y: DEFAULT_INNER_BBOX_DENSE_SHRINK_Y,
       font_unify_mode: DEFAULT_FONT_UNIFY_MODE,
+      ...optionalRenderOutputModes(developerConfig.outputModes),
     };
   }
 
