@@ -7,6 +7,7 @@ use crate::ocr_provider::{
 };
 
 const RENDER_MODES: &[&str] = &["auto", "overlay", "typst", "typst_visual", "dual"];
+const OUTPUT_MODES: &[&str] = &["bilingual_overlay", "dual"];
 const FONT_UNIFY_MODES: &[&str] = &["role_min", "off"];
 
 pub fn validate_provider_credentials(input: &CreateJobInput) -> Result<(), AppError> {
@@ -48,6 +49,16 @@ pub fn validate_render_options(input: &CreateJobInput) -> Result<(), AppError> {
         &input.render.render_mode,
         RENDER_MODES,
     )?;
+    let mut seen_output_modes = std::collections::HashSet::new();
+    for output_mode in &input.render.output_modes {
+        validate_allowed_value("render.output_modes", output_mode, OUTPUT_MODES)?;
+        let normalized = output_mode.trim().to_ascii_lowercase();
+        if !seen_output_modes.insert(normalized) {
+            return Err(AppError::bad_request(
+                "render.output_modes must not contain duplicate values",
+            ));
+        }
+    }
     validate_allowed_value(
         "render.font_unify_mode",
         &input.render.font_unify_mode,
@@ -297,6 +308,31 @@ mod tests {
         let mut input = CreateJobInput::default();
         input.render.source_cleanup_strategy = "pikepdf_text_strip".to_string();
         assert!(validate_render_options(&input).is_ok());
+    }
+
+    #[test]
+    fn render_options_accept_engineering_drawing_outputs() {
+        let mut input = CreateJobInput::default();
+        input.translation.rule_profile_name = "engineering_drawing".to_string();
+        input.render.output_modes = vec!["bilingual_overlay".to_string(), "dual".to_string()];
+
+        assert!(validate_render_options(&input).is_ok());
+    }
+
+    #[test]
+    fn render_options_reject_unknown_or_duplicate_output_modes() {
+        let mut input = CreateJobInput::default();
+        input.render.output_modes = vec!["poster".to_string()];
+        assert!(validate_render_options(&input)
+            .expect_err("unknown output mode should fail")
+            .to_string()
+            .contains("render.output_modes must be one of"));
+
+        input.render.output_modes = vec!["dual".to_string(), "DUAL".to_string()];
+        assert!(validate_render_options(&input)
+            .expect_err("duplicate output mode should fail")
+            .to_string()
+            .contains("must not contain duplicate"));
     }
 
     #[test]

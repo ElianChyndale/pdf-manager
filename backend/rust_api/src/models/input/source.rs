@@ -6,6 +6,8 @@ pub struct JobSourceInput {
     #[serde(default)]
     pub upload_id: String,
     #[serde(default)]
+    pub legacy_translation_upload_id: String,
+    #[serde(default)]
     pub source_url: String,
     #[serde(default)]
     pub artifact_job_id: String,
@@ -14,6 +16,8 @@ pub struct JobSourceInput {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ResolvedSourceSpec {
     pub upload_id: String,
+    #[serde(default)]
+    pub legacy_translation_upload_id: String,
     pub source_url: String,
     pub artifact_job_id: String,
 }

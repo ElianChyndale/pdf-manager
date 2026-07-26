@@ -28,6 +28,11 @@ impl ResolvedJobSpec {
             job_id,
             source: ResolvedSourceSpec {
                 upload_id: input.source.upload_id.trim().to_string(),
+                legacy_translation_upload_id: input
+                    .source
+                    .legacy_translation_upload_id
+                    .trim()
+                    .to_string(),
                 source_url: input.source.source_url.trim().to_string(),
                 artifact_job_id: input.source.artifact_job_id.trim().to_string(),
             },

@@ -33,6 +33,7 @@ mod tests {
 
         assert_eq!(input.workflow, WorkflowKind::Book);
         assert_eq!(input.source.upload_id, "upload-1");
+        assert!(input.source.legacy_translation_upload_id.is_empty());
         assert_eq!(input.ocr.mineru_token, "mineru-token");
         assert_eq!(input.translation.model, "deepseek-v4-flash");
         assert_eq!(input.translation.base_url, "https://api.deepseek.com/v1");
@@ -148,6 +149,7 @@ mod tests {
 
         assert!(!spec.job_id.trim().is_empty());
         assert_eq!(spec.source.upload_id, "upload-1");
+        assert!(spec.source.legacy_translation_upload_id.is_empty());
         assert_eq!(spec.resolved_workers(), 100);
     }
 }

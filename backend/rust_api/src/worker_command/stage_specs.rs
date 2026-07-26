@@ -118,6 +118,7 @@ pub(crate) fn write_translate_stage_spec(
         "inputs": {
             "source_json": source_json_path,
             "source_pdf": source_pdf_path,
+            "legacy_translation_upload_id": request.source.legacy_translation_upload_id,
             "layout_json": layout_json_path,
         },
         "params": {
@@ -142,6 +143,7 @@ pub(crate) fn write_translate_stage_spec(
             "credential_ref": credential_ref,
             "render_prewarm_output_pdf_path": render_prewarm_output_pdf_path,
             "render_prewarm_mode": request.render.render_mode,
+            "render_prewarm_output_modes": request.render.output_modes,
             "render_prewarm_pdf_compress_dpi": request.render.pdf_compress_dpi,
             "render_prewarm_source_cleanup_strategy": request.render.source_cleanup_strategy,
         },
@@ -175,6 +177,7 @@ pub(crate) fn write_render_stage_spec(
         },
         "inputs": {
             "source_pdf": source_pdf_path,
+            "legacy_translation_upload_id": request.source.legacy_translation_upload_id,
             "translations_dir": translations_dir,
             "translation_manifest": translations_dir.join("translation-manifest.json"),
         },
@@ -182,6 +185,7 @@ pub(crate) fn write_render_stage_spec(
             "start_page": request.translation.start_page,
             "end_page": request.translation.end_page,
             "render_mode": request.render.render_mode,
+            "output_modes": request.render.output_modes,
             "compile_workers": request.render.compile_workers,
             "typst_font_family": request.render.typst_font_family,
             "pdf_compress_dpi": request.render.pdf_compress_dpi,
@@ -238,6 +242,7 @@ pub(crate) fn write_provider_stage_spec(
         "source": {
             "file_url": request.source.source_url,
             "file_path": upload_path,
+            "legacy_translation_upload_id": request.source.legacy_translation_upload_id,
         },
         "ocr": {
             "provider": request.ocr.provider,
@@ -280,6 +285,7 @@ pub(crate) fn write_provider_stage_spec(
         },
         "render": {
             "render_mode": request.render.render_mode,
+            "output_modes": request.render.output_modes,
             "compile_workers": request.render.compile_workers,
             "typst_font_family": request.render.typst_font_family,
             "pdf_compress_dpi": request.render.pdf_compress_dpi,

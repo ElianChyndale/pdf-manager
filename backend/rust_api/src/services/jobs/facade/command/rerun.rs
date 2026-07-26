@@ -91,6 +91,11 @@ fn build_rerun_request(source_job: &JobSnapshot) -> Result<CreateJobInput, AppEr
         workflow,
         source: JobSourceInput {
             upload_id: source_job.request_payload.source.upload_id.clone(),
+            legacy_translation_upload_id: source_job
+                .request_payload
+                .source
+                .legacy_translation_upload_id
+                .clone(),
             source_url: source_job.request_payload.source.source_url.clone(),
             artifact_job_id: source_job.request_payload.source.artifact_job_id.clone(),
         },

@@ -465,6 +465,7 @@ Canonical JSON request:
   "workflow": "book",
   "source": {
     "upload_id": "20260327190000-ab12cd",
+    "legacy_translation_upload_id": "",
     "source_url": "",
     "artifact_job_id": ""
   },
@@ -503,6 +504,7 @@ Canonical JSON request:
   },
   "render": {
     "render_mode": "auto",
+    "output_modes": [],
     "compile_workers": 0,
     "typst_font_family": "Source Han Serif SC",
     "pdf_compress_dpi": 0,
@@ -554,11 +556,14 @@ Translation options:
 - `translation.math_mode` is optional
 - `direct_typst` is the default
 - `direct_typst` is an experimental mode that asks the model to output translated prose with inline `$...$` math directly
+- `translation.rule_profile_name=engineering_drawing` selects the engineering drawing translation policy
+- `source.legacy_translation_upload_id` optionally links an uploaded legacy draft for audit; when supplied, the upload must exist
 
 Render options:
 
 - The normative render parameter contract is maintained in `RENDER_OPTIONS_CONTRACT.md`
 - `render.pdf_compress_dpi` defaults to `0`; `0` disables the extra PDF image compression pass
+- `render.output_modes` defaults to `[]` for backward compatibility; engineering jobs may request `["bilingual_overlay", "dual"]`
 - `render.body_font_size_factor` defaults to `0.95`
 - `render.body_leading_factor` defaults to `1.08`
 - `render.font_unify_mode` accepts `role_min` or `off`
@@ -576,7 +581,7 @@ Validation:
 - `ocr.mineru_token` must not be a URL-like string
 - `translation.base_url` must start with `http://` or `https://`
 - `translation.api_key` must not be a URL-like string
-- render enum-like options are validated in Rust; unknown `render_mode`, `font_unify_mode`, or `source_cleanup_strategy` values return `400`
+- render enum-like options are validated in Rust; unknown `render_mode`, `output_modes`, `font_unify_mode`, or `source_cleanup_strategy` values return `400`
 - provider-specific upstream limits apply only to the selected OCR provider, not to the shared `workflow=book` protocol itself
 - Rust API no longer supplies default OCR provider / LLM credentials for `create_job`
 - legacy flat JSON fields such as `upload_id`, `model`, and `api_key` are rejected by `/api/v1/jobs`; flat field mapping only remains in selected multipart helper endpoints
@@ -586,6 +591,49 @@ Response redaction rules:
 - `request_payload.ocr.mineru_token`, `request_payload.ocr.paddle_token`, and `request_payload.translation.api_key` are always returned as empty strings
 - `request_payload.ocr.mineru_token_configured`, `request_payload.ocr.paddle_token_configured`, and `request_payload.translation.api_key_configured` indicate whether the backend received those credentials
 - `error`, `log_tail`, `events[*].message`, `events[*].payload`, translation diagnostics payloads, translation debug item payloads, and replay payloads are redacted before leaving Rust API
+
+### 2.1 Engineering Drawing Batches
+
+`POST /api/v1/engineering-drawing/batches`
+
+Creates one normal pipeline job per unique `content_hash`. Duplicate copies retain their own
+`relative_path` entry but reference the canonical item's `job_id`, so OCR and translation are not
+repeated. The endpoint forces `translation.rule_profile_name=engineering_drawing`; when
+`render.output_modes` is empty it defaults the batch jobs to
+`["bilingual_overlay", "dual"]`.
+
+```json
+{
+  "job_template": {
+    "workflow": "book",
+    "source": {},
+    "ocr": {
+      "provider": "paddle",
+      "paddle_token": "paddle-token"
+    },
+    "translation": {
+      "model": "deepseek-v4-flash",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-xxxx"
+    },
+    "render": {}
+  },
+  "items": [
+    {
+      "source_upload_id": "upload-source-1",
+      "legacy_translation_upload_id": "upload-legacy-1",
+      "relative_path": "MEP/1310-CN-ELEC-A001_Site Plan.pdf",
+      "content_hash": "sha256-hex"
+    }
+  ]
+}
+```
+
+Related endpoints:
+
+- `GET /api/v1/engineering-drawing/batches/{batch_id}` returns live per-item job status and aggregate counts
+- `POST /api/v1/engineering-drawing/batches/{batch_id}/resume` reruns failed or canceled canonical jobs using the existing checkpoint-aware job rerun path
+- `POST /api/v1/engineering-drawing/batches/{batch_id}/review` stores a per-item review decision; body is `{"item_index": 0, "status": "approved", "note": "..."}` and status accepts `pending`, `approved`, or `rejected`
 
 Glossary v1 contract:
 

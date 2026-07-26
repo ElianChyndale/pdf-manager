@@ -34,6 +34,7 @@ pub(super) fn prepare_full_pipeline_input(
     input: &CreateJobInput,
 ) -> Result<PreparedTranslationUpload, AppError> {
     let input = resolve_task_glossary_request(ctx.db, input)?;
+    validate_legacy_translation_upload(ctx, &input)?;
     validate_render_options(&input)?;
     if !input.source.artifact_job_id.trim().is_empty() {
         validate_translation_credentials(&input)?;
@@ -58,6 +59,7 @@ pub(super) fn prepare_translate_only_input(
     input: &CreateJobInput,
 ) -> Result<PreparedTranslateOnlyInput, AppError> {
     let input = resolve_task_glossary_request(ctx.db, input)?;
+    validate_legacy_translation_upload(ctx, &input)?;
     validate_render_options(&input)?;
     if input.source.artifact_job_id.trim().is_empty() {
         let _ = require_translation_upload(ctx, &input)?;
@@ -79,6 +81,7 @@ pub(super) fn prepare_render_input(
     ctx: &SnapshotBuildDeps<'_>,
     input: &CreateJobInput,
 ) -> Result<PreparedRenderInput, AppError> {
+    validate_legacy_translation_upload(ctx, input)?;
     if input.source.artifact_job_id.trim().is_empty() {
         return Err(AppError::bad_request(
             "source.artifact_job_id is required for render workflow",
@@ -101,6 +104,7 @@ pub(super) fn prepare_ocr_input(
     input: &CreateJobInput,
     upload: Option<&UploadRecord>,
 ) -> Result<PreparedOcrInput, AppError> {
+    validate_legacy_translation_upload(ctx, input)?;
     validate_ocr_provider_request(input)?;
     if upload.is_none() && input.source.source_url.trim().is_empty() {
         return Err(AppError::bad_request(
@@ -133,4 +137,16 @@ fn require_translation_upload(
     let upload = load_upload_or_404(ctx.db, &input.source.upload_id)?;
     validate_mineru_upload_limits(input, &upload, ctx.config.provider_limits)?;
     Ok(upload)
+}
+
+fn validate_legacy_translation_upload(
+    ctx: &SnapshotBuildDeps<'_>,
+    input: &CreateJobInput,
+) -> Result<(), AppError> {
+    let legacy_upload_id = input.source.legacy_translation_upload_id.trim();
+    if legacy_upload_id.is_empty() {
+        return Ok(());
+    }
+    load_upload_or_404(ctx.db, legacy_upload_id)?;
+    Ok(())
 }

@@ -2,6 +2,8 @@
 mod common;
 #[path = "models/defaults.rs"]
 mod defaults;
+#[path = "models/engineering_batch.rs"]
+mod engineering_batch;
 #[path = "models/glossary.rs"]
 mod glossary;
 #[path = "models/input.rs"]
@@ -20,6 +22,11 @@ mod view;
 pub use common::{
     build_job_id, now_iso, ApiResponse, JobStatusKind, UploadRecord, UploadView, WorkflowKind,
     LOG_TAIL_LIMIT,
+};
+pub use engineering_batch::{
+    job_status_name, EngineeringBatchCreateInput, EngineeringBatchItemInput,
+    EngineeringBatchItemRecord, EngineeringBatchItemView, EngineeringBatchRecord,
+    EngineeringBatchReviewInput, EngineeringBatchView,
 };
 pub use glossary::{
     build_glossary_id, glossary_to_detail, glossary_to_summary, GlossaryCsvParseInput,

@@ -17,6 +17,8 @@ pub struct RenderInput {
     #[serde(default = "default_render_mode")]
     pub render_mode: String,
     #[serde(default)]
+    pub output_modes: Vec<String>,
+    #[serde(default)]
     pub compile_workers: i64,
     #[serde(default = "default_typst_font_family")]
     pub typst_font_family: String,
@@ -46,6 +48,7 @@ impl Default for RenderInput {
     fn default() -> Self {
         Self {
             render_mode: default_render_mode(),
+            output_modes: Vec::new(),
             compile_workers: 0,
             typst_font_family: default_typst_font_family(),
             pdf_compress_dpi: default_pdf_compress_dpi(),

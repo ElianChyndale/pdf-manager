@@ -587,7 +587,10 @@ mod tests {
             ],
         );
         assert_object_has_keys(&provider["job"], &["job_id", "job_root", "workflow"]);
-        assert_object_has_keys(&provider["source"], &["file_url", "file_path"]);
+        assert_object_has_keys(
+            &provider["source"],
+            &["file_url", "file_path", "legacy_translation_upload_id"],
+        );
         assert_object_has_keys(
             &provider["ocr"],
             &[
@@ -637,6 +640,7 @@ mod tests {
             &provider["render"],
             &[
                 "render_mode",
+                "output_modes",
                 "compile_workers",
                 "typst_font_family",
                 "pdf_compress_dpi",
@@ -693,7 +697,12 @@ mod tests {
         );
         assert_object_has_keys(
             &translate["inputs"],
-            &["source_json", "source_pdf", "layout_json"],
+            &[
+                "source_json",
+                "source_pdf",
+                "legacy_translation_upload_id",
+                "layout_json",
+            ],
         );
         assert_object_has_keys(
             &translate["params"],
@@ -719,6 +728,7 @@ mod tests {
                 "credential_ref",
                 "render_prewarm_output_pdf_path",
                 "render_prewarm_mode",
+                "render_prewarm_output_modes",
                 "render_prewarm_pdf_compress_dpi",
                 "render_prewarm_source_cleanup_strategy",
             ],
@@ -737,7 +747,12 @@ mod tests {
         );
         assert_object_has_keys(
             &render["inputs"],
-            &["source_pdf", "translations_dir", "translation_manifest"],
+            &[
+                "source_pdf",
+                "legacy_translation_upload_id",
+                "translations_dir",
+                "translation_manifest",
+            ],
         );
         assert_object_has_keys(
             &render["params"],
@@ -745,6 +760,7 @@ mod tests {
                 "start_page",
                 "end_page",
                 "render_mode",
+                "output_modes",
                 "compile_workers",
                 "typst_font_family",
                 "pdf_compress_dpi",

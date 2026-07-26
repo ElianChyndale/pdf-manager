@@ -116,6 +116,9 @@ fn apply_multipart_request_field(
         "developer_mode" => *developer_mode = parse_bool_like(value),
         "workflow" => {}
         "upload_id" => request.source.upload_id = value.to_string(),
+        "legacy_translation_upload_id" => {
+            request.source.legacy_translation_upload_id = value.to_string()
+        }
         "source_url" => request.source.source_url = value.to_string(),
         "artifact_job_id" => request.source.artifact_job_id = value.to_string(),
         "job_id" => request.runtime.job_id = value.to_string(),
@@ -137,6 +140,7 @@ fn apply_multipart_request_field(
         "model" => request.translation.model = value.to_string(),
         "base_url" => request.translation.base_url = value.to_string(),
         "render_mode" => request.render.render_mode = value.to_string(),
+        "output_modes" => request.render.output_modes = parse_output_modes_field(value)?,
         "compile_workers" => request.render.compile_workers = parse_i64_like(name, value)?,
         "typst_font_family" => request.render.typst_font_family = value.to_string(),
         "pdf_compress_dpi" => request.render.pdf_compress_dpi = parse_i64_like(name, value)?,
@@ -191,6 +195,24 @@ fn parse_glossary_entries_field(value: &str) -> Result<Vec<GlossaryEntryInput>, 
         .map_err(|err| AppError::bad_request(format!("glossary_json must be a JSON array: {err}")))
 }
 
+fn parse_output_modes_field(value: &str) -> Result<Vec<String>, AppError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') {
+        return serde_json::from_str::<Vec<String>>(trimmed).map_err(|err| {
+            AppError::bad_request(format!("output_modes must be a JSON array: {err}"))
+        });
+    }
+    Ok(trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
 fn parse_bool_like(value: &str) -> bool {
     matches!(
         value.trim(),
@@ -224,6 +246,13 @@ mod tests {
         apply_multipart_request_field(
             &mut request,
             &mut developer_mode,
+            "legacy_translation_upload_id",
+            "upload-legacy",
+        )
+        .expect("legacy_translation_upload_id");
+        apply_multipart_request_field(
+            &mut request,
+            &mut developer_mode,
             "source_url",
             "https://example.com/paper.pdf",
         )
@@ -250,11 +279,19 @@ mod tests {
             .expect("api_key");
         apply_multipart_request_field(&mut request, &mut developer_mode, "render_mode", "auto")
             .expect("render_mode");
+        apply_multipart_request_field(
+            &mut request,
+            &mut developer_mode,
+            "output_modes",
+            r#"["bilingual_overlay","dual"]"#,
+        )
+        .expect("output_modes");
         apply_multipart_request_field(&mut request, &mut developer_mode, "timeout_seconds", "600")
             .expect("timeout_seconds");
 
         assert!(!developer_mode);
         assert_eq!(request.source.upload_id, "upload-1");
+        assert_eq!(request.source.legacy_translation_upload_id, "upload-legacy");
         assert_eq!(request.source.source_url, "https://example.com/paper.pdf");
         assert_eq!(request.ocr.provider, "paddle");
         assert_eq!(request.ocr.mineru_token, "mineru");
@@ -262,6 +299,10 @@ mod tests {
         assert_eq!(request.translation.base_url, "https://api.deepseek.com/v1");
         assert_eq!(request.translation.api_key, "sk-test");
         assert_eq!(request.render.render_mode, "auto");
+        assert_eq!(
+            request.render.output_modes,
+            vec!["bilingual_overlay".to_string(), "dual".to_string()]
+        );
         assert_eq!(request.runtime.timeout_seconds, 600);
     }
 

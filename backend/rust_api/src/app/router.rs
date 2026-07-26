@@ -7,6 +7,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::app::AppState;
 use crate::auth;
+use crate::routes::engineering_batches;
 use crate::routes::glossaries;
 use crate::routes::health;
 use crate::routes::jobs;
@@ -55,6 +56,22 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/v1/uploads",
             post(uploads::upload_pdf).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/v1/engineering-drawing/batches",
+            post(engineering_batches::create_batch),
+        )
+        .route(
+            "/api/v1/engineering-drawing/batches/:batch_id",
+            get(engineering_batches::get_batch),
+        )
+        .route(
+            "/api/v1/engineering-drawing/batches/:batch_id/resume",
+            post(engineering_batches::resume_batch),
+        )
+        .route(
+            "/api/v1/engineering-drawing/batches/:batch_id/review",
+            post(engineering_batches::review_batch_item),
         )
         .route(
             "/api/v1/glossaries/parse-csv",

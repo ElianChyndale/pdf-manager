@@ -273,6 +273,40 @@ fn create_translation_job_allows_translate_workflow_from_existing_artifact_job()
 }
 
 #[test]
+fn create_translation_job_accepts_existing_legacy_translation_upload() {
+    let state = test_state("translation-with-legacy-upload");
+    seed_upload(&state, "upload-source");
+    seed_upload(&state, "upload-legacy");
+    let mut input = base_translation_input(WorkflowKind::Book);
+    input.source.upload_id = "upload-source".to_string();
+    input.source.legacy_translation_upload_id = "upload-legacy".to_string();
+
+    let job = create_translation_job(&submit_context(&state), &input)
+        .expect("existing legacy upload should be accepted");
+
+    assert_eq!(
+        job.request_payload.source.legacy_translation_upload_id,
+        "upload-legacy"
+    );
+}
+
+#[test]
+fn create_translation_job_rejects_unknown_legacy_translation_upload() {
+    let state = test_state("translation-with-missing-legacy-upload");
+    seed_upload(&state, "upload-source");
+    let mut input = base_translation_input(WorkflowKind::Book);
+    input.source.upload_id = "upload-source".to_string();
+    input.source.legacy_translation_upload_id = "upload-missing".to_string();
+
+    let error = create_translation_job(&submit_context(&state), &input)
+        .expect_err("unknown legacy upload should fail");
+
+    assert!(error
+        .to_string()
+        .contains("upload not found: upload-missing"));
+}
+
+#[test]
 fn create_translation_job_rejects_missing_artifact_job_for_render_workflow() {
     let state = test_state("render-missing-artifact");
     let input = base_translation_input(WorkflowKind::Render);
