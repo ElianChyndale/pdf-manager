@@ -57,6 +57,13 @@ def _int_field(parent: dict[str, Any], key: str, default: int) -> int:
     return int(value)
 
 
+def _string_list_field(parent: dict[str, Any], key: str) -> list[str]:
+    value = parent.get(key) or []
+    if not isinstance(value, list):
+        raise RuntimeError(f"stage spec field '{key}' must be a list")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 @dataclass(frozen=True)
 class StageJobRef:
     job_id: str
@@ -179,6 +186,7 @@ class TranslateStageParams:
     credential_ref: str
     render_prewarm_output_pdf_path: Path | None
     render_prewarm_mode: str
+    render_prewarm_output_modes: list[str]
     render_prewarm_pdf_compress_dpi: int
     render_prewarm_source_cleanup_strategy: str
 
@@ -247,6 +255,7 @@ class TranslateStageSpec:
             credential_ref=str(params_payload.get("credential_ref", "") or ""),
             render_prewarm_output_pdf_path=_optional_path(params_payload.get("render_prewarm_output_pdf_path")),
             render_prewarm_mode=str(params_payload.get("render_prewarm_mode", "auto") or "auto"),
+            render_prewarm_output_modes=_string_list_field(params_payload, "render_prewarm_output_modes"),
             render_prewarm_pdf_compress_dpi=int(params_payload.get("render_prewarm_pdf_compress_dpi", 0) or 0),
             render_prewarm_source_cleanup_strategy=str(
                 params_payload.get("render_prewarm_source_cleanup_strategy", "strict_replace") or "strict_replace"
@@ -277,6 +286,7 @@ class RenderStageParams:
     start_page: int
     end_page: int
     render_mode: str
+    output_modes: list[str]
     compile_workers: int
     typst_font_family: str
     pdf_compress_dpi: int
@@ -337,6 +347,7 @@ class RenderStageSpec:
             start_page=_int_field(params_payload, "start_page", 0),
             end_page=_int_field(params_payload, "end_page", -1),
             render_mode=str(params_payload.get("render_mode", "typst") or "typst"),
+            output_modes=_string_list_field(params_payload, "output_modes"),
             compile_workers=int(params_payload.get("compile_workers", 0) or 0),
             typst_font_family=str(params_payload.get("typst_font_family", "") or "").strip()
             or fonts.TYPST_DEFAULT_FONT_FAMILY,
@@ -419,6 +430,7 @@ class ProviderStageTranslationParams:
 @dataclass(frozen=True)
 class ProviderStageRenderParams:
     render_mode: str
+    output_modes: list[str]
     compile_workers: int
     typst_font_family: str
     pdf_compress_dpi: int
@@ -514,6 +526,7 @@ class ProviderStageSpec:
         )
         render = ProviderStageRenderParams(
             render_mode=str(render_payload.get("render_mode", "typst") or "typst"),
+            output_modes=_string_list_field(render_payload, "output_modes"),
             compile_workers=int(render_payload.get("compile_workers", 0) or 0),
             typst_font_family=str(render_payload.get("typst_font_family", "") or "").strip()
             or fonts.TYPST_DEFAULT_FONT_FAMILY,
@@ -576,6 +589,7 @@ class BookStageTranslationParams:
 @dataclass(frozen=True)
 class BookStageRenderParams:
     render_mode: str
+    output_modes: list[str]
     compile_workers: int
     typst_font_family: str
     pdf_compress_dpi: int
@@ -655,6 +669,7 @@ class BookStageSpec:
         )
         render = BookStageRenderParams(
             render_mode=str(render_payload.get("render_mode", "typst") or "typst"),
+            output_modes=_string_list_field(render_payload, "output_modes"),
             compile_workers=int(render_payload.get("compile_workers", 0) or 0),
             typst_font_family=str(render_payload.get("typst_font_family", "") or "").strip()
             or fonts.TYPST_DEFAULT_FONT_FAMILY,

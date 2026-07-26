@@ -4,6 +4,8 @@ __pycache__/
 *.log
 node_modules/
 target/
+.runtime/
+tmp/
 
 output/
 !backend/scripts/services/rendering/output/

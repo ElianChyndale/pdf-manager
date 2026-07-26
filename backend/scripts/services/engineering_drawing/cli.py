@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from .inventory import build_inventory
 from .legacy_audit import audit_inventory
 from .reports import write_report_bundle
+from .sample_builder import build_samples
+from .hybrid_ocr import HybridOcrConfig
+from .hybrid_ocr import run_hybrid_ocr
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,11 +26,48 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--screenshots", action="store_true")
             command.add_argument("--dpi", type=int, default=110)
             command.add_argument("--only-paired", action="store_true")
+    samples = subparsers.add_parser("samples")
+    samples.add_argument("--audit-json", required=True, type=Path)
+    samples.add_argument("--output-root", required=True, type=Path)
+    samples.add_argument("--work-dir", required=True, type=Path)
+    ocr = subparsers.add_parser("ocr")
+    ocr.add_argument("--pdf", required=True, type=Path)
+    ocr.add_argument("--output", required=True, type=Path)
+    ocr.add_argument("--cache-dir", required=True, type=Path)
+    ocr.add_argument("--start-page", type=int, default=1)
+    ocr.add_argument("--end-page", type=int, default=-1)
+    ocr.add_argument("--dpi", type=int, default=220)
+    ocr.add_argument("--no-deepseek", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "samples":
+        print(
+            json.dumps(
+                build_samples(
+                    audit_json_path=args.audit_json,
+                    output_root=args.output_root,
+                    work_dir=args.work_dir,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "ocr":
+        result = run_hybrid_ocr(
+            pdf_path=args.pdf,
+            output_path=args.output,
+            cache_dir=args.cache_dir,
+            start_page=args.start_page,
+            end_page=args.end_page,
+            config=HybridOcrConfig(dpi=args.dpi),
+            enable_deepseek=not args.no_deepseek,
+        )
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
+        return 0
     inventory = build_inventory(args.root)
     manifest_json, manifest_csv = inventory.write(args.output)
     response: dict[str, object] = {
@@ -44,3 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(json.dumps(response, ensure_ascii=False, indent=2))
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

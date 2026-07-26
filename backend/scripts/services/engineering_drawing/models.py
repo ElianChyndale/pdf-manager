@@ -38,6 +38,8 @@ class Provenance(StrEnum):
     ROTATED_OCR = "rotated_ocr"
     TILED_OCR = "tiled_ocr"
     VECTOR_OUTLINE = "vector_outline"
+    PADDLE_OCR = "paddle_ocr"
+    DEEPSEEK_OCR = "deepseek_ocr"
     MANUAL = "manual"
 
 

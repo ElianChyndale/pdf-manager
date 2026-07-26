@@ -54,6 +54,7 @@ def _args_from_spec(spec: RenderStageSpec) -> SimpleNamespace:
         start_page=spec.params.start_page,
         end_page=spec.params.end_page,
         render_mode=spec.params.render_mode,
+        output_modes=spec.params.output_modes,
         compile_workers=spec.params.compile_workers,
         typst_font_family=spec.params.typst_font_family,
         pdf_compress_dpi=spec.params.pdf_compress_dpi,
@@ -126,6 +127,7 @@ def main() -> None:
             start_page=args.start_page,
             end_page=args.end_page,
             render_mode=args.render_mode,
+            output_modes=args.output_modes,
             compile_workers=args.compile_workers or None,
             extract_selected_pages=False,
             api_key=args.api_key,
@@ -149,6 +151,7 @@ def main() -> None:
                 "total_elapsed": elapsed,
                 "render_mode": args.render_mode,
                 "effective_render_mode": result.get("effective_render_mode", args.render_mode),
+                "output_mode_paths": result.get("output_mode_paths", {}),
                 "pdf_compress_dpi": args.pdf_compress_dpi,
                 "render_diagnostics": result.get("render_diagnostics", {}),
                 "events_jsonl": str(event_writer.path),
@@ -170,6 +173,13 @@ def main() -> None:
             stage="saving",
             message="render-only 输出 PDF 已发布",
         )
+        for mode, path in sorted(result.get("output_mode_paths", {}).items()):
+            emit_artifact_published(
+                artifact_key=f"output_pdf_{mode}",
+                path=Path(path),
+                stage="saving",
+                message=f"render-only {mode} 输出 PDF 已发布",
+            )
         emit_stage_transition(
             stage="finished",
             message="render-only 阶段完成",

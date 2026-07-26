@@ -27,6 +27,7 @@ class BookRequest:
     model: str = DEFAULT_MODEL
     base_url: str = DEFAULT_BASE_URL
     render_mode: str = "auto"
+    output_modes: list[str] | None = None
     rule_profile_name: str = "general_sci"
     custom_rules_text: str = ""
     glossary_id: str = ""
@@ -55,6 +56,7 @@ class BookResult:
     save_elapsed: float
     total_elapsed: float
     effective_render_mode: str
+    output_mode_paths: dict[str, str]
     translation_diagnostics_path: str
     translation_debug_index_path: str
     translation_provider_family: str
@@ -77,6 +79,7 @@ class BookResult:
             save_elapsed=float(value.get("save_elapsed", 0.0)),
             total_elapsed=float(value.get("total_elapsed", 0.0)),
             effective_render_mode=value.get("effective_render_mode", ""),
+            output_mode_paths=dict(value.get("output_mode_paths", {}) or {}),
             translation_diagnostics_path=value.get("translation_diagnostics_path", ""),
             translation_debug_index_path=value.get("translation_debug_index_path", ""),
             translation_provider_family=value.get("translation_provider_family", ""),
@@ -99,6 +102,7 @@ class BookResult:
             "save_elapsed": self.save_elapsed,
             "total_elapsed": self.total_elapsed,
             "effective_render_mode": self.effective_render_mode,
+            "output_mode_paths": self.output_mode_paths,
             "translation_diagnostics_path": self.translation_diagnostics_path,
             "translation_debug_index_path": self.translation_debug_index_path,
             "translation_provider_family": self.translation_provider_family,
@@ -265,6 +269,7 @@ def run_book(request: BookRequest) -> BookResult:
             classify_batch_size=request.classify_batch_size,
             skip_title_translation=request.skip_title_translation,
             render_mode=request.render_mode,
+            output_modes=request.output_modes,
             rule_profile_name=request.rule_profile_name,
             custom_rules_text=request.custom_rules_text,
             glossary_id=request.glossary_id,

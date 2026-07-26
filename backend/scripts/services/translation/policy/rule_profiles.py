@@ -10,6 +10,7 @@ KNOWN_RULE_PROFILE_NAMES = {
     "general",
     "general_sci",
     "computational_chemistry",
+    "engineering_drawing",
     "software_manual",
 }
 
