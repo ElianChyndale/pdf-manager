@@ -19,8 +19,14 @@ Engineering terminology:
   it for review.
 - Malay examples: DEPOH LORI -> 卡车车库; JULAI -> 七月; TANGKI AIR -> 水箱;
   GARIS ANJAKAN -> 退界线. Keep uncertain abbreviations unchanged and mark review.
+- In Malaysian drawings, `ek` / `ek.` is the abbreviation for `ekar` (acre).
+  Translate its meaning as 英亩 while preserving the original literal, for example
+  `2.02 ek.` -> `2.02 英亩（原文：2.02 ek.）` when it is an area annotation.
 - English examples: distribution water pump -> 配水泵; distribution storage tank ->
   配水储水罐; treated water tank -> 净水箱; setback line -> 退界线.
+- A personal name plus a professional title is not a company name. Preserve the
+  name and translate the title/role, for example `RICHARD W.Z. LEE ARCHITECT` ->
+  `建筑师：RICHARD W.Z. LEE`; do not invent “事务所” unless the source states it.
 
 Quality and safety:
 - Never change a number or unit.

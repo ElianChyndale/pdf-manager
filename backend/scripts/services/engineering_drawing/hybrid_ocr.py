@@ -24,7 +24,7 @@ def _local_deepseek_model() -> str:
 
 @dataclass(frozen=True)
 class HybridOcrConfig:
-    pipeline_version: int = 5
+    pipeline_version: int = 6
     dpi: int = 220
     tile_size: int = 2200
     tile_overlap: int = 180
@@ -34,6 +34,10 @@ class HybridOcrConfig:
     paddle_det_model: str = "PP-OCRv5_server_det"
     paddle_rec_model: str = "PP-OCRv5_server_rec"
     deepseek_model: str = field(default_factory=_local_deepseek_model)
+    # Avoid first building a 100+ megapixel page PNG for a secondary OCR pass.
+    # Direct tiles retain the same page-coordinate evidence while keeping peak
+    # memory bounded by one tile.
+    direct_tile_render: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +132,83 @@ def _render_page(page: fitz.Page, path: Path, dpi: int) -> tuple[int, int]:
     return pixmap.width, pixmap.height
 
 
+def _render_page_tiles_direct(
+    page: fitz.Page,
+    *,
+    output_dir: Path,
+    dpi: int,
+    tile_size: int,
+    overlap: int,
+) -> tuple[int, int, list[dict]]:
+    """Render raster tiles directly from PDF coordinates without a giant canvas."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    scale = max(0.1, float(dpi) / 72.0)
+    image_width = max(1, int(round(page.rect.width * scale)))
+    image_height = max(1, int(round(page.rect.height * scale)))
+    effective_tile = max(256, int(tile_size or 2200))
+    step = max(256, effective_tile - max(0, int(overlap or 0)))
+    x_positions = list(range(0, max(1, image_width - effective_tile + 1), step))
+    y_positions = list(range(0, max(1, image_height - effective_tile + 1), step))
+    final_x = max(0, image_width - effective_tile)
+    final_y = max(0, image_height - effective_tile)
+    if not x_positions or x_positions[-1] != final_x:
+        x_positions.append(final_x)
+    if not y_positions or y_positions[-1] != final_y:
+        y_positions.append(final_y)
+    matrix = fitz.Matrix(scale, scale)
+    entries: list[dict] = []
+    for y in sorted(set(y_positions)):
+        for x in sorted(set(x_positions)):
+            x1 = min(image_width, x + effective_tile)
+            y1 = min(image_height, y + effective_tile)
+            clip = fitz.Rect(
+                page.rect.x0 + x / scale,
+                page.rect.y0 + y / scale,
+                page.rect.x0 + x1 / scale,
+                page.rect.y0 + y1 / scale,
+            )
+            tile_path = output_dir / f"tile-{x:05d}-{y:05d}.png"
+            pixmap = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
+            pixmap.save(tile_path)
+            entries.append(
+                {
+                    "id": f"tile-{x}-{y}",
+                    "image_path": str(tile_path),
+                    "meta": {"offset_x": x, "offset_y": y},
+                }
+            )
+    return image_width, image_height, entries
+
+
+def _polygon_direction(polygon: object) -> tuple[int, int | None]:
+    """Return the nearest supported text rotation and the measured baseline.
+
+    Paddle can give a correct axis-aligned bbox for a vertical label while its
+    orientation flag remains zero.  The quadrilateral baseline is therefore
+    the primary evidence for vertical / upside-down placement.  Diagonal text
+    is retained with its measured angle for audit and rendered horizontally
+    nearby because PDF textbox rotation is restricted to right angles.
+    """
+    if not isinstance(polygon, list) or len(polygon) < 2:
+        return 0, None
+    try:
+        x0, y0 = float(polygon[0][0]), float(polygon[0][1])
+        x1, y1 = float(polygon[1][0]), float(polygon[1][1])
+    except (TypeError, ValueError, IndexError):
+        return 0, None
+    dx, dy = x1 - x0, y1 - y0
+    if not dx and not dy:
+        return 0, None
+    import math
+
+    angle = int(round(math.degrees(math.atan2(dy, dx)))) % 360
+    nearest = min((0, 90, 180, 270), key=lambda candidate: min((angle - candidate) % 360, (candidate - angle) % 360))
+    # Do not pretend diagonals are horizontal/vertical: keep their real angle
+    # in the audit, but only propagate a cardinal rotation close to the line.
+    deviation = min((angle - nearest) % 360, (nearest - angle) % 360)
+    return (nearest if deviation <= 12 else 0), angle
+
+
 def _paddle_regions(
     payload: dict,
     *,
@@ -152,9 +233,9 @@ def _paddle_regions(
         confidence = float(item.get("confidence", 0) or 0)
         if confidence < min_confidence:
             continue
+        polygon = item.get("polygon") or []
         box = item.get("bbox") or []
         if len(box) != 4:
-            polygon = item.get("polygon") or []
             if not polygon:
                 continue
             xs = [float(point[0]) for point in polygon]
@@ -169,7 +250,8 @@ def _paddle_regions(
         text = str(item.get("text", "") or "").strip()
         action = _action(text)
         orientation = int(item.get("orientation", -1) or -1)
-        rotation = 180 if orientation == 1 else 0
+        polygon_rotation, baseline_angle = _polygon_direction(polygon)
+        rotation = polygon_rotation or (180 if orientation == 1 else 0)
         compact = _normalized(text)
         provenance = (
             Provenance.VECTOR_OUTLINE
@@ -189,6 +271,7 @@ def _paddle_regions(
                 "source_language": _language(text).value,
                 "bbox": bbox,
                 "rotation": rotation,
+                "baseline_angle": baseline_angle,
                 "provenance": provenance.value,
                 "action": action.value,
                 "legacy_status": LegacyStatus.MISSING.value if action == Action.TRANSLATE else LegacyStatus.ACCEPTED.value,
@@ -261,13 +344,18 @@ def _merge_native_and_visual(native: list[dict], visual: list[dict]) -> list[dic
 def _needs_deepseek(region: dict, threshold: float) -> bool:
     if region.get("provenance") == Provenance.NATIVE_TEXT.value:
         return False
-    text = _normalized(str(region.get("source_text", "")))
+    raw_text = str(region.get("source_text", "") or "")
+    text = _normalized(raw_text)
     confidence = float(region.get("ocr_confidence", 0) or 0)
-    return (
-        confidence < threshold
-        or region.get("rotation") not in (0, None)
-        or any(marker in text for marker in ("setbackl", "depoh", "lori", "distributionwater", "treatedwater"))
-    )
+    regression = any(marker in text for marker in ("setbackl", "depoh", "lori", "distributionwater", "treatedwater"))
+    has_meaningful_latin = bool(re.search(r"[A-Za-z]{3,}", raw_text))
+    # Very short CAD grid tags (X, S, A, 1R1) are still sent to the translation
+    # and coverage gate, but re-OCRing each noisy occurrence provides no extra
+    # evidence.  Reserve the expensive visual reviewer for text-like candidates,
+    # rotated language, vector outlines and fixed regressions.
+    if not (has_meaningful_latin or regression or region.get("provenance") == Provenance.VECTOR_OUTLINE.value):
+        return False
+    return confidence < threshold or region.get("rotation") not in (0, None) or regression
 
 
 def _crop_review_regions(
@@ -278,7 +366,7 @@ def _crop_review_regions(
     output_dir: Path,
     limit: int,
     threshold: float,
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     image = Image.open(image_path).convert("RGB")
     sx = image.width / page.rect.width
     sy = image.height / page.rect.height
@@ -301,15 +389,20 @@ def _crop_review_regions(
         key=review_priority,
     )
     selected = []
+    skipped_ids: list[str] = []
     seen_texts: set[str] = set()
     for region in candidates:
         normalized = _normalized(str(region.get("source_text", "")))
         if normalized in seen_texts:
             continue
         seen_texts.add(normalized)
+        # A value of zero is the production / approval setting: review every
+        # candidate.  Bounded preview runs remain explicit and leave a visible
+        # audit flag on every candidate not sent to DeepSeek-OCR.
+        if limit > 0 and len(selected) >= limit:
+            skipped_ids.append(str(region.get("region_id") or ""))
+            continue
         selected.append(region)
-        if len(selected) >= limit:
-            break
     manifest_items = []
     for region in selected:
         rect = fitz.Rect(region["bbox"])
@@ -330,7 +423,7 @@ def _crop_review_regions(
                 "source_text": region["source_text"],
             }
         )
-    return manifest_items
+    return manifest_items, [item_id for item_id in skipped_ids if item_id]
 
 
 def run_hybrid_ocr(
@@ -344,11 +437,19 @@ def run_hybrid_ocr(
     enable_deepseek: bool = True,
 ) -> HybridOcrResult:
     config = config or HybridOcrConfig()
+    if config.direct_tile_render and enable_deepseek:
+        raise ValueError("direct_tile_render is for Paddle-only raster fallback passes")
     pdf_path = Path(pdf_path).resolve()
     cache_dir = Path(cache_dir)
+    cache_config = asdict(config)
+    # Keep the existing primary-pass cache valid after adding the optional
+    # direct-tile fallback feature. A false optional flag is semantically the
+    # same as the pre-feature configuration and must not re-run 360-DPI OCR.
+    if not cache_config.get("direct_tile_render"):
+        cache_config.pop("direct_tile_render", None)
     cache_key = hashlib.sha256(
         json.dumps(
-            {"sha256": _sha256(pdf_path), "config": asdict(config), "start": start_page, "end": end_page, "deepseek": enable_deepseek},
+            {"sha256": _sha256(pdf_path), "config": cache_config, "start": start_page, "end": end_page, "deepseek": enable_deepseek},
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
@@ -371,16 +472,26 @@ def run_hybrid_ocr(
         stop = document.page_count if end_page < 0 else min(document.page_count, end_page)
         for page_number in range(max(1, start_page), stop + 1):
             page = document[page_number - 1]
-            image_path = temp_dir / f"page-{page_number:03d}.png"
-            width, height = _render_page(page, image_path, config.dpi)
             paddle_output = temp_dir / f"page-{page_number:03d}-paddle.json"
             paddle_manifest = temp_dir / f"page-{page_number:03d}-paddle-manifest.json"
-            paddle_inputs = _tile_manifest(
-                image_path,
-                output_dir=temp_dir / f"page-{page_number:03d}-tiles",
-                tile_size=config.tile_size,
-                overlap=config.tile_overlap,
-            )
+            image_path: Path | None = None
+            if config.direct_tile_render:
+                width, height, paddle_inputs = _render_page_tiles_direct(
+                    page,
+                    output_dir=temp_dir / f"page-{page_number:03d}-tiles",
+                    dpi=config.dpi,
+                    tile_size=config.tile_size,
+                    overlap=config.tile_overlap,
+                )
+            else:
+                image_path = temp_dir / f"page-{page_number:03d}.png"
+                width, height = _render_page(page, image_path, config.dpi)
+                paddle_inputs = _tile_manifest(
+                    image_path,
+                    output_dir=temp_dir / f"page-{page_number:03d}-tiles",
+                    tile_size=config.tile_size,
+                    overlap=config.tile_overlap,
+                )
             paddle_manifest.write_text(json.dumps({"items": paddle_inputs}, ensure_ascii=False), encoding="utf-8")
             _run(
                 [
@@ -416,14 +527,22 @@ def run_hybrid_ocr(
             native_count += len(native)
             paddle_count += len(paddle)
             merged = _merge_native_and_visual(native, paddle)
-            review_manifest = _crop_review_regions(
-                image_path,
-                merged,
-                page=page,
-                output_dir=temp_dir,
-                limit=config.deepseek_max_regions_per_page,
-                threshold=config.deepseek_review_threshold,
-            )
+            if enable_deepseek and image_path is not None:
+                review_manifest, skipped_review_ids = _crop_review_regions(
+                    image_path,
+                    merged,
+                    page=page,
+                    output_dir=temp_dir,
+                    limit=config.deepseek_max_regions_per_page,
+                    threshold=config.deepseek_review_threshold,
+                )
+            else:
+                review_manifest, skipped_review_ids = [], []
+            if skipped_review_ids:
+                skipped_set = set(skipped_review_ids)
+                for region in merged:
+                    if str(region.get("region_id") or "") in skipped_set:
+                        region.setdefault("qa_flags", []).append("deepseek_ocr_not_reviewed_due_to_budget")
             if enable_deepseek and review_manifest:
                 if not deepseek_python.exists():
                     raise RuntimeError(f"DeepSeek OCR runtime missing: {deepseek_python}")

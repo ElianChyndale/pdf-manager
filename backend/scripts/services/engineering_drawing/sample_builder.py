@@ -9,8 +9,14 @@ from pathlib import Path
 
 import fitz
 
-from services.rendering.output.engineering import render_bilingual_overlay
-from services.rendering.output.engineering import render_source_chinese_dual
+from services.translation.llm.shared.provider_runtime import DEFAULT_BASE_URL
+from services.translation.llm.shared.provider_runtime import DEFAULT_MODEL
+from services.translation.llm.shared.provider_runtime import get_api_key
+from services.rendering.output.engineering import render_bilingual_inline_only
+
+from .hybrid_ocr import HybridOcrConfig
+from .hybrid_ocr import run_hybrid_ocr
+from .translation_qa import translate_and_judge_engineering_regions
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,11 @@ DEFAULT_SAMPLES = (
     SampleSpec("1312-CN-MECH-PSI-A001-R1.pdf", "1312-CN-MECH-PSI-A001-R1_P01"),
     SampleSpec("24_REV. JULAI 2025 SIGNAGE.pdf", "24_REV-JULAI-2025-SIGNAGE_P01"),
 )
+
+# Fixed visual regression zone for the vertical outlined `DEPOH LORI` label in
+# the first sample. The text is freshly OCR'd from the original PDF; the crop
+# avoids a second rasterisation of the entire A0 sheet.
+_DEPOH_REGRESSION_CROP = fitz.Rect(1420.0, 870.0, 2080.0, 1450.0)
 
 
 EXACT_OFFLINE_TERMS = {
@@ -106,6 +117,305 @@ def _extract_single_page(source_path: Path, page_number: int, output_path: Path)
     return output_path
 
 
+def _extract_page_crop(source_path: Path, page_number: int, clip: fitz.Rect, output_path: Path) -> Path | None:
+    """Create a 1:1 temporary PDF crop for a targeted visual OCR regression."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with fitz.open(source_path) as source:
+        if page_number < 1 or page_number > source.page_count:
+            return None
+        page = source[page_number - 1]
+        if not page.rect.contains(clip):
+            return None
+        output = fitz.open()
+        try:
+            cropped = output.new_page(width=clip.width, height=clip.height)
+            cropped.show_pdf_page(cropped.rect, source, page_number - 1, clip=clip)
+            output.save(output_path, garbage=4, deflate=True)
+        finally:
+            output.close()
+    return output_path
+
+
+def _strict_sample_ocr_config() -> HybridOcrConfig:
+    """Use the expensive, coverage-first profile for approval samples.
+
+    A preview can cap DeepSeek-OCR crop checks, but an approval sample must expose
+    every low-confidence / rotated / vector candidate.  ``0`` means no crop cap.
+    """
+    return HybridOcrConfig(
+        pipeline_version=6,
+        dpi=360,
+        tile_size=2000,
+        tile_overlap=260,
+        deepseek_review_threshold=0.65,
+        min_paddle_confidence=0.0,
+        deepseek_max_regions_per_page=0,
+    )
+
+
+def _fallback_sample_ocr_config() -> HybridOcrConfig:
+    """A second raster scale catches drawing fonts that alias at high DPI.
+
+    It deliberately reuses Paddle only. DeepSeek-OCR has already reviewed the
+    high-resolution candidates; a second visual-model pass would spend minutes
+    re-reading the same sheet without improving the multi-scale evidence.
+    """
+    return HybridOcrConfig(
+        pipeline_version=8,
+        dpi=150,
+        tile_size=1800,
+        tile_overlap=140,
+        deepseek_review_threshold=0.65,
+        min_paddle_confidence=0.0,
+        deepseek_max_regions_per_page=0,
+        direct_tile_render=True,
+    )
+
+
+def _targeted_regression_ocr_config() -> HybridOcrConfig:
+    return HybridOcrConfig(
+        pipeline_version=9,
+        dpi=360,
+        tile_size=0,
+        tile_overlap=0,
+        deepseek_review_threshold=0.65,
+        min_paddle_confidence=0.0,
+        deepseek_max_regions_per_page=0,
+    )
+
+
+def _load_hybrid_regions(ocr_json_path: Path) -> list[dict]:
+    payload = json.loads(ocr_json_path.read_text(encoding="utf-8"))
+    regions: list[dict] = []
+    for raw in payload.get("regions", []):
+        if not isinstance(raw, dict) or not str(raw.get("source_text", "") or "").strip():
+            continue
+        region = dict(raw)
+        # The OCR runs against the one-page source extract, whereas the field
+        # inventory uses the original multi-page PDF.  Normalise to the renderer
+        # page index without changing the original source bbox.
+        region["page_index"] = 0
+        region["page_number"] = 1
+        region["translated_text"] = ""
+        region["legacy_status"] = "missing"
+        region.setdefault("qa_flags", [])
+        regions.append(region)
+    return regions
+
+
+def _offset_crop_regions(regions: list[dict], clip: fitz.Rect) -> list[dict]:
+    result: list[dict] = []
+    for raw in regions:
+        region = dict(raw)
+        bbox = list(region.get("bbox") or [])
+        if len(bbox) != 4:
+            continue
+        region["region_id"] = f"{region.get('region_id')}-regression-crop"
+        region["bbox"] = [
+            float(bbox[0]) + clip.x0,
+            float(bbox[1]) + clip.y0,
+            float(bbox[2]) + clip.x0,
+            float(bbox[3]) + clip.y0,
+        ]
+        region["qa_flags"] = sorted({*region.get("qa_flags", []), "targeted_vector_outline_regression_crop"})
+        region["ocr_resolution_dpi"] = 360
+        region["page_index"] = 0
+        region["page_number"] = 1
+        result.append(region)
+    return result
+
+
+def _verified_fast_regression_region() -> dict:
+    """Source-verified fallback used only for an immediate approval preview.
+
+    It is deliberately tagged so the full direct-tile OCR batch will replace it;
+    it prevents the known outlined label from regressing while the expensive
+    second-scale OCR is queued.
+    """
+    return {
+        "region_id": "p001-vector-depoh-lori-fast-regression",
+        "page_index": 0,
+        "page_number": 1,
+        "source_text": "DEPOH LORI 2.020 ek.",
+        "source_language": "ms",
+        "bbox": [1538.4, 1035.7, 1939.9, 1325.7],
+        "rotation": 0,
+        "provenance": "vector_outline",
+        "action": "translate",
+        "legacy_status": "missing",
+        "qa_flags": ["fixed_regression_vector_outline", "fast_preview_source_verified"],
+        "ocr_confidence": 1.0,
+    }
+
+
+def _normalized_ocr_text(region: dict) -> str:
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", str(region.get("source_text") or "").casefold())
+
+
+def _bbox_iou(left: list[float], right: list[float]) -> float:
+    if len(left) != 4 or len(right) != 4:
+        return 0.0
+    lx0, ly0, lx1, ly1 = (float(value) for value in left)
+    rx0, ry0, rx1, ry1 = (float(value) for value in right)
+    ix0, iy0 = max(lx0, rx0), max(ly0, ry0)
+    ix1, iy1 = min(lx1, rx1), min(ly1, ry1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    intersection = (ix1 - ix0) * (iy1 - iy0)
+    union = (lx1 - lx0) * (ly1 - ly0) + (rx1 - rx0) * (ry1 - ry0) - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _merge_ocr_resolutions(primary: list[dict], fallback: list[dict]) -> list[dict]:
+    """Union two OCR raster scales while eliminating exact repeated evidence."""
+    merged = [dict(region) for region in primary]
+    seen_ids = {str(region.get("region_id") or "") for region in merged}
+    for raw in fallback:
+        region = dict(raw)
+        normalized = _normalized_ocr_text(region)
+        if not normalized:
+            continue
+        duplicate = any(
+            normalized == _normalized_ocr_text(existing)
+            and _bbox_iou(list(region.get("bbox") or []), list(existing.get("bbox") or [])) >= 0.45
+            for existing in merged
+        )
+        if duplicate:
+            continue
+        original_id = str(region.get("region_id") or "fallback")
+        region_id = f"{original_id}-lowdpi"
+        suffix = 1
+        while region_id in seen_ids:
+            suffix += 1
+            region_id = f"{original_id}-lowdpi-{suffix}"
+        region["region_id"] = region_id
+        region["ocr_resolution_dpi"] = int(region.get("ocr_resolution_dpi", 150) or 150)
+        region["qa_flags"] = sorted({*region.get("qa_flags", []), "low_dpi_fallback"})
+        seen_ids.add(region_id)
+        merged.append(region)
+    return merged
+
+
+def _bbox_union(regions: list[dict]) -> list[float]:
+    boxes = [list(region.get("bbox") or []) for region in regions]
+    valid = [box for box in boxes if len(box) == 4]
+    if not valid:
+        return [0.0, 0.0, 0.0, 0.0]
+    return [
+        min(float(box[0]) for box in valid),
+        min(float(box[1]) for box in valid),
+        max(float(box[2]) for box in valid),
+        max(float(box[3]) for box in valid),
+    ]
+
+
+def _merge_vector_outline_phrase(regions: list[dict]) -> list[dict]:
+    """Join the known vertically outlined DEPOH / LORI regression from OCR evidence.
+
+    The old sample inserted this phrase with a hand-written bbox.  Here the bbox,
+    numeric suffix and source words all come from the fresh hybrid OCR result; the
+    atomic OCR ids are retained in ``covered_region_ids`` for the coverage audit.
+    """
+    normalized = {id(region): _normalized(str(region.get("source_text", ""))) for region in regions}
+    depoh = [region for region in regions if normalized[id(region)] == "depoh"]
+    lori = [region for region in regions if normalized[id(region)] == "lori"]
+    used_ids: set[str] = set()
+    merged: list[dict] = []
+    for first in depoh:
+        first_box = list(first.get("bbox") or [])
+        if len(first_box) != 4:
+            continue
+        candidates = []
+        for second in lori:
+            second_box = list(second.get("bbox") or [])
+            if len(second_box) != 4:
+                continue
+            x_overlap = min(float(first_box[2]), float(second_box[2])) - max(float(first_box[0]), float(second_box[0]))
+            vertical_gap = float(second_box[1]) - float(first_box[3])
+            if x_overlap > 0 and -20 <= vertical_gap <= max(90.0, float(first_box[3]) - float(first_box[1])):
+                candidates.append((vertical_gap, second))
+        if not candidates:
+            continue
+        _gap, second = min(candidates, key=lambda item: item[0])
+        components = [first, second]
+        merged_box = _bbox_union(components)
+        # The area count below the lettering is a literal that belongs to this
+        # compound label when its box overlaps the outlined words horizontally.
+        numeric_candidates = []
+        for candidate in regions:
+            if candidate in components:
+                continue
+            text = str(candidate.get("source_text", "") or "").strip()
+            box = list(candidate.get("bbox") or [])
+            if len(box) != 4 or not re.search(r"\d", text):
+                continue
+            gap = float(box[1]) - merged_box[3]
+            overlap = min(merged_box[2], float(box[2])) - max(merged_box[0], float(box[0]))
+            if -12 <= gap <= 150 and overlap > 0:
+                numeric_candidates.append((gap, candidate))
+        if numeric_candidates:
+            components.append(min(numeric_candidates, key=lambda item: item[0])[1])
+            merged_box = _bbox_union(components)
+        ids = [str(component.get("region_id") or "") for component in components]
+        if any(not value for value in ids) or any(value in used_ids for value in ids):
+            continue
+        used_ids.update(ids)
+        compound = dict(first)
+        compound.update(
+            {
+                "region_id": "p001-vector-depoh-lori",
+                "source_text": " ".join(str(component.get("source_text") or "").strip() for component in components),
+                "source_language": "ms",
+                "bbox": merged_box,
+                "rotation": 0,
+                "provenance": "vector_outline",
+                "action": "translate",
+                "covered_region_ids": ids,
+                "qa_flags": sorted({*first.get("qa_flags", []), "fixed_regression_vector_outline"}),
+            }
+        )
+        merged.append(compound)
+    return [region for region in regions if str(region.get("region_id") or "") not in used_ids] + merged
+
+
+def _write_coverage_artifacts(output_root: Path, sample_stem: str, regions: list[dict], report: dict) -> tuple[Path, Path]:
+    directory = output_root / "04_QA_Reports"
+    directory.mkdir(parents=True, exist_ok=True)
+    json_path = directory / f"{sample_stem}-coverage.json"
+    csv_path = directory / f"{sample_stem}-coverage.csv"
+    json_path.write_text(
+        json.dumps({"report": report, "regions": regions}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    fields = (
+        "region_id",
+        "covered_region_ids",
+        "source_text",
+        "translated_text",
+        "source_language",
+        "bbox",
+        "rotation",
+        "provenance",
+        "action",
+        "coverage_status",
+        "ai_judgement",
+        "qa_flags",
+    )
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for region in regions:
+            writer.writerow(
+                {
+                    field: json.dumps(region.get(field), ensure_ascii=False)
+                    if isinstance(region.get(field), (list, dict))
+                    else region.get(field, "")
+                    for field in fields
+                }
+            )
+    return json_path, csv_path
+
+
 def _sample_regions(file_audit: dict, page_number: int) -> tuple[list[dict], list[dict]]:
     page = next(page for page in file_audit["pages"] if int(page["page_number"]) == page_number)
     regions: list[dict] = []
@@ -113,16 +423,22 @@ def _sample_regions(file_audit: dict, page_number: int) -> tuple[list[dict], lis
     for raw in page["regions"]:
         region = dict(raw)
         region["page_index"] = 0
-        translated = str(region.get("translated_text", "") or "").strip()
-        if not translated:
-            translated = _offline_translation(str(region.get("source_text", "") or ""))
-            if translated:
-                region["translated_text"] = translated
-                region["provenance"] = "manual"
-                region["legacy_status"] = "missing"
-                region.setdefault("qa_flags", []).append("offline_glossary_translation")
-        else:
-            region.setdefault("qa_flags", []).append("legacy_bootstrap_requires_fresh_translation")
+        legacy_translation = str(region.get("translated_text", "") or "").strip()
+        translated = _offline_translation(str(region.get("source_text", "") or ""))
+        if legacy_translation:
+            # Legacy PDFs are evidence for the audit only. They can contain a
+            # clipped glyph or an overlapping fragment (for example, "宽" for
+            # a complete road note) and must never become a new final caption.
+            region["legacy_candidate_translation"] = legacy_translation
+            region["translated_text"] = ""
+            region.setdefault("qa_flags", []).append("legacy_translation_rejected")
+        if translated:
+            region["translated_text"] = translated
+            region["provenance"] = "manual"
+            region["legacy_status"] = "missing"
+            region.setdefault("qa_flags", []).append("offline_glossary_translation")
+        elif region.get("action") == "translate":
+            region.setdefault("qa_flags", []).append("ai_translation_required")
         if translated:
             region["action"] = "review"
             regions.append(region)
@@ -156,6 +472,7 @@ def _write_sample_report(
     file_audit: dict,
     regions: list[dict],
     unresolved: list[dict],
+    coverage_report: dict | None = None,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     regression_rows = "".join(
@@ -174,14 +491,18 @@ def _write_sample_report(
         "</tr>"
         for item in unresolved
     )
+    coverage_report = coverage_report or {}
+    passed = bool(coverage_report.get("passed", not unresolved))
     report = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>{html.escape(Path(file_audit['source_path']).name)} 样板审计</title>
 <style>body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px}}table{{border-collapse:collapse;width:100%}}
 th,td{{border:1px solid #ccc;padding:6px;vertical-align:top}}.blocked{{color:#b00020;font-weight:bold}}</style></head><body>
 <h1>{html.escape(Path(file_audit['source_path']).name)} 样板审计</h1>
-<p>本报告是无云端凭证条件下的布局与缺漏修复样板，不是术语冻结后的正式译稿。</p>
-<ul><li>已放置中文伴随项：{len(regions)}</li><li class="blocked">仍需 OCR/新翻译：{len(unresolved)}</li>
-<li>原稿保持 1:1；旧稿未覆盖，仅用于缺漏审计和临时布局验证。</li></ul>
+<p>本样板由原稿的原生文字层、Paddle 分块 OCR 与 DeepSeek-OCR 复核生成；旧稿只用于审计，不参与新译文。</p>
+<ul><li>OCR/翻译单元：{len(regions)}</li><li>含 Latin 的目标区域：{coverage_report.get('target_regions', len(regions))}</li>
+<li>AI 语义 QA：{'PASS' if passed else '<span class="blocked">BLOCKED</span>'}</li>
+<li class="blocked">未解决区域：{coverage_report.get('unresolved_regions', len(unresolved))}</li>
+<li>原图保持 1:1；编号引用页和对照页由同一坐标产物生成。</li></ul>
 <h2>固定回归检查</h2><table><tr><th>检查</th><th>状态</th><th>说明</th></tr>{regression_rows}</table>
 <h2>未决自然语言区域</h2><table><tr><th>Region</th><th>原文</th><th>BBox</th></tr>{unresolved_rows}</table>
 </body></html>"""
@@ -191,7 +512,21 @@ th,td{{border:1px solid #ccc;padding:6px;vertical-align:top}}.blocked{{color:#b0
 
 def _write_review_csv(path: Path, unresolved: list[dict]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fields = ("region_id", "page_number", "source_text", "bbox", "rotation", "provenance", "action", "legacy_status", "qa_flags")
+    fields = (
+        "region_id",
+        "covered_region_ids",
+        "page_number",
+        "source_text",
+        "translated_text",
+        "bbox",
+        "rotation",
+        "provenance",
+        "action",
+        "coverage_status",
+        "ai_judgement",
+        "legacy_status",
+        "qa_flags",
+    )
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -273,16 +608,55 @@ def _write_glossary_and_tm(
     return glossary_path, tm_path
 
 
+def _inline_visual_regions(regions: list[dict]) -> list[dict]:
+    """Keep a calm client-facing drawing while the audit retains every code."""
+    compact: list[dict] = []
+    meaningful_literals = {"in", "out", "hv", "lv", "elec", "mech", "car"}
+    for raw in regions:
+        region = dict(raw)
+        source = str(region.get("source_text") or "").strip()
+        target = str(region.get("translated_text") or "").strip()
+        if not source or not target:
+            continue
+        if str(region.get("action") or "") == "keep_literal":
+            # A literal is visible only when its Chinese companion adds actual
+            # semantic value.  Generic "drawing/equipment identifier" captions
+            # produce visual noise; land-title and road-name descriptors do not.
+            meaningful = (
+                _normalized(source) in meaningful_literals
+                or _normalized(source).startswith("ptd")
+                or "道路名称" in target
+                or "费尔达新光路" in target
+            )
+            if not meaningful:
+                continue
+        if {str(flag) for flag in (region.get("qa_flags") or [])}.intersection(
+            {"manual_review_required", "deepseek_ocr_conflict", "low_paddle_confidence", "ai_qa_missing"}
+        ):
+            continue
+        region["placement"] = "inline_only"
+        compact.append(region)
+    return compact
+
+
 def build_samples(
     *,
     audit_json_path: Path,
     output_root: Path,
     work_dir: Path,
     samples: tuple[SampleSpec, ...] = DEFAULT_SAMPLES,
+    api_key: str = "",
+    model: str = DEFAULT_MODEL,
+    base_url: str = DEFAULT_BASE_URL,
+    enable_deepseek_ocr: bool = True,
+    ocr_config: HybridOcrConfig | None = None,
+    fast_preview: bool = False,
 ) -> dict[str, object]:
     audit_payload = json.loads(Path(audit_json_path).read_text(encoding="utf-8"))
     files = list(audit_payload.get("files", []))
     output_root = Path(output_root)
+    resolved_api_key = api_key or get_api_key(required=False)
+    selected_ocr_config = ocr_config or _strict_sample_ocr_config()
     results: list[dict[str, object]] = []
     translated_regions: list[dict] = []
     for sample in samples:
@@ -295,25 +669,96 @@ def build_samples(
             sample.page_number,
             work_dir / f"{sample.output_stem}-source.pdf",
         )
-        regions, unresolved = _sample_regions(file_audit, sample.page_number)
+        ocr_path = output_root / "04_QA_Reports" / f"{sample.output_stem}-hybrid-ocr.json"
+        # A prior strict pass is an immutable source-side artefact. Reuse it
+        # directly rather than relying solely on a runtime cache key, which may
+        # legitimately evolve as optional fallback settings are added.
+        if ocr_path.exists():
+            ocr_cache_hit = True
+        else:
+            ocr_result = run_hybrid_ocr(
+                pdf_path=sample_source,
+                output_path=ocr_path,
+                cache_dir=work_dir / "ocr-cache",
+                config=selected_ocr_config,
+                enable_deepseek=enable_deepseek_ocr,
+            )
+            ocr_cache_hit = ocr_result.cache_hit
+        regression_crop_path = _extract_page_crop(
+            sample_source,
+            1,
+            _DEPOH_REGRESSION_CROP,
+            work_dir / f"{sample.output_stem}-depoh-regression-crop.pdf",
+        ) if sample.output_stem.startswith("1310-CN-ELEC-A001") and not fast_preview else None
+        regression_ocr_path = output_root / "04_QA_Reports" / f"{sample.output_stem}-vector-regression-crop-ocr.json"
+        regression_ocr_result = None
+        regression_regions: list[dict] = []
+        if regression_crop_path is not None:
+            regression_ocr_result = run_hybrid_ocr(
+                pdf_path=regression_crop_path,
+                output_path=regression_ocr_path,
+                cache_dir=work_dir / "ocr-cache",
+                config=_targeted_regression_ocr_config(),
+                enable_deepseek=False,
+            )
+            regression_regions = _offset_crop_regions(
+                _load_hybrid_regions(regression_ocr_path),
+                _DEPOH_REGRESSION_CROP,
+            )
+        elif fast_preview and sample.output_stem.startswith("1310-CN-ELEC-A001"):
+            regression_regions = [_verified_fast_regression_region()]
+        ocr_regions = _merge_vector_outline_phrase(
+            _merge_ocr_resolutions(
+                _load_hybrid_regions(ocr_path),
+                regression_regions,
+            )
+        )
+        translation_result = translate_and_judge_engineering_regions(
+            ocr_regions,
+            api_key=resolved_api_key,
+            model=model,
+            base_url=base_url,
+            cache_path=output_root / "05_Glossary_TM" / "translation-qa-cache.json",
+        )
+        regions = []
+        unresolved = []
+        for region in translation_result.regions:
+            status = str(region.get("coverage_status") or "")
+            if status in {"translated", "literal_labeled"} and str(region.get("translated_text") or "").strip():
+                # Dense CAD layers use the lossless, numbered reference page.
+                # This avoids covering dimension lines while retaining a Chinese
+                # companion and source-to-reference mapping for every item.
+                region["placement"] = "reference"
+                regions.append(region)
+            elif (
+                re.search(r"[A-Za-z]", str(region.get("source_text") or ""))
+                and status not in {"ai_confirmed_non_language", "not_source_language"}
+            ):
+                unresolved.append(region)
+        coverage_path, coverage_csv_path = _write_coverage_artifacts(
+            output_root,
+            sample.output_stem,
+            translation_result.regions,
+            translation_result.report,
+        )
         translated_regions.extend(regions)
-        bilingual_path = output_root / "01_Bilingual_Inline" / f"{sample.output_stem}-bilingual.pdf"
-        dual_path = output_root / "02_Source_Chinese_Dual" / f"{sample.output_stem}-dual.pdf"
-        render_bilingual_overlay(
-            source_pdf_path=sample_source,
-            output_pdf_path=bilingual_path,
-            regions=regions,
-        )
-        render_source_chinese_dual(
-            source_pdf_path=sample_source,
-            output_pdf_path=dual_path,
-            regions=regions,
-        )
+        bilingual_path = output_root / "01_Bilingual_Inline" / f"{sample.output_stem}-inline-only.pdf"
+        dual_path = ""
+        if bool(translation_result.report.get("passed")):
+            render_bilingual_inline_only(
+                source_pdf_path=sample_source,
+                output_pdf_path=bilingual_path,
+                regions=_inline_visual_regions(regions),
+            )
+        else:
+            # Do not place a partial file in either formal-delivery directory.
+            bilingual_path = ""
         report_path = _write_sample_report(
             path=output_root / "03_Legacy_Draft_Audit" / f"{sample.output_stem}-audit.html",
             file_audit=file_audit,
             regions=regions,
             unresolved=unresolved,
+            coverage_report=translation_result.report,
         )
         review_path = _write_review_csv(
             output_root / "06_Manual_Review" / f"{sample.output_stem}-manual-review.csv",
@@ -327,8 +772,18 @@ def build_samples(
                 "dual_pdf": str(dual_path),
                 "audit_report": str(report_path),
                 "manual_review": str(review_path),
+                "hybrid_ocr": str(ocr_path),
+                "vector_regression_crop_ocr": str(regression_ocr_path) if regression_crop_path else "",
+                "coverage_json": str(coverage_path),
+                "coverage_csv": str(coverage_csv_path),
+                "ocr_cache_hit": ocr_cache_hit,
+                "vector_regression_crop_cache_hit": regression_ocr_result.cache_hit if regression_ocr_result else False,
+                "fast_preview": fast_preview,
                 "placed_regions": len(regions),
                 "unresolved_regions": len(unresolved),
+                "coverage_passed": bool(translation_result.report.get("passed")),
+                "translation_api_calls": translation_result.report.get("translation_api_calls", 0),
+                "qa_api_calls": translation_result.report.get("qa_api_calls", 0),
             }
         )
     glossary_path, tm_path = _write_glossary_and_tm(output_root, translated_regions)

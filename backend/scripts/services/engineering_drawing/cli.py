@@ -5,6 +5,9 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from services.translation.llm.shared.provider_runtime import DEFAULT_BASE_URL
+from services.translation.llm.shared.provider_runtime import DEFAULT_MODEL
+
 from .inventory import build_inventory
 from .legacy_audit import audit_inventory
 from .reports import write_report_bundle
@@ -30,6 +33,9 @@ def _parser() -> argparse.ArgumentParser:
     samples.add_argument("--audit-json", required=True, type=Path)
     samples.add_argument("--output-root", required=True, type=Path)
     samples.add_argument("--work-dir", required=True, type=Path)
+    samples.add_argument("--model", default=DEFAULT_MODEL)
+    samples.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    samples.add_argument("--no-deepseek-ocr", action="store_true")
     ocr = subparsers.add_parser("ocr")
     ocr.add_argument("--pdf", required=True, type=Path)
     ocr.add_argument("--output", required=True, type=Path)
@@ -50,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
                     audit_json_path=args.audit_json,
                     output_root=args.output_root,
                     work_dir=args.work_dir,
+                    model=args.model,
+                    base_url=args.base_url,
+                    enable_deepseek_ocr=not args.no_deepseek_ocr,
                 ),
                 ensure_ascii=False,
                 indent=2,
