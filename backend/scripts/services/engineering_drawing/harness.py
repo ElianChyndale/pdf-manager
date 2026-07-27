@@ -33,6 +33,7 @@ _GEO_ENTITY_RE = re.compile(
 )
 _UNSAFE_STATUSES = {"rejected_invalid", "rejected_unverified_ocr", "rejected_no_near_space", "rejected_text_did_not_fit"}
 _NON_SOURCE_OBSERVATION_STATUSES = {"ai_confirmed_non_language", "ai_confirmed_duplicate_observation"}
+_ADDITIVE_APPROVALS = {"ai_verified_source", "manual_verified_source"}
 
 
 @dataclass(frozen=True)
@@ -292,6 +293,38 @@ def audit_existing_legacy_companions(
     finally:
         document.close()
     return placements
+
+
+def select_legacy_additions(
+    *,
+    legacy_pdf_path: Path,
+    source_regions: Iterable[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Return only safe, approved additions for a frozen legacy translation.
+
+    A legacy drawing is the authority for all text it already renders in
+    Chinese. It is never retranslated or reflowed. New captions are admitted
+    only when no nearby legacy Chinese companion exists *and* the OCR evidence
+    has been explicitly accepted by the AI review stage (or a human reviewer).
+    Symbols, codes and speculative OCR therefore cannot leak into an additive
+    production PDF.
+    """
+    candidates = [dict(region) for region in source_regions]
+    existing = audit_existing_legacy_companions(legacy_pdf_path=legacy_pdf_path, regions=candidates)
+    existing_ids = {str(item.get("region_id") or "") for item in existing}
+    additions: list[dict] = []
+    for region in candidates:
+        region_id = str(region.get("region_id") or "")
+        if region_id in existing_ids:
+            continue
+        if str(region.get("addition_approval") or "") not in _ADDITIVE_APPROVALS:
+            continue
+        if str(region.get("action") or "") != "translate" or not _has_chinese(region.get("translated_text")):
+            continue
+        if str(region.get("observation_status") or "") in _NON_SOURCE_OBSERVATION_STATUSES:
+            continue
+        additions.append(region)
+    return additions, existing
 
 
 def run_full_coverage_harness(

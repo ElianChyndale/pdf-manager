@@ -61,6 +61,18 @@ def _valid_bbox(region: dict) -> fitz.Rect | None:
     return rect if not rect.is_empty and not rect.is_infinite else None
 
 
+def _placement_anchor_rect(region: dict, fallback: fitz.Rect | None) -> fitz.Rect | None:
+    """Use an approved visual anchor without changing the recorded source bbox."""
+    bbox = region.get("placement_anchor_bbox")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return fallback
+    try:
+        rect = fitz.Rect(*(float(value) for value in bbox))
+    except (TypeError, ValueError):
+        return fallback
+    return rect if not rect.is_empty and not rect.is_infinite else fallback
+
+
 def _regions_by_page(regions: Iterable[dict]) -> dict[int, list[dict]]:
     result: dict[int, list[dict]] = {}
     for region in regions:
@@ -611,6 +623,7 @@ def _inline_only_rect(
     occupied: list[fitz.Rect],
     font: fitz.Font,
     rotation: int,
+    max_local_distance: float = 104.0,
 ) -> tuple[fitz.Rect, float, float] | None:
     """Find a *near* caption position without covering source information.
 
@@ -666,6 +679,8 @@ def _inline_only_rect(
     # placement that is no longer visually local.
     expanded: list[fitz.Rect] = list(candidates)
     for extra_gap in (8.0, 14.0, 20.0, 28.0, 36.0, 44.0, 60.0, 80.0, 104.0):
+        if extra_gap > max_local_distance:
+            continue
         delta = extra_gap - gap
         for candidate in candidates:
             if rotation in {90, 270}:
@@ -709,6 +724,8 @@ def render_bilingual_inline_only(
     output_pdf_path: Path,
     regions: Iterable[dict],
     font_path: Path | None = None,
+    max_local_distance: float = 104.0,
+    draw_leaders: bool = True,
 ) -> EngineeringRenderResult:
     """Render a single-page, unnumbered original-plus-Chinese drawing.
 
@@ -745,6 +762,7 @@ def render_bilingual_inline_only(
             occupied = [rect for rect in _source_text_rects(source_page) if rect.is_valid]
             for region in page_regions:
                 source_rect = _valid_bbox(region)
+                placement_anchor = _placement_anchor_rect(region, source_rect)
                 translated = _compact_inline_text(_translated_text(region))
                 rotation = _rotation(region)
                 audit_entry = {
@@ -762,17 +780,18 @@ def render_bilingual_inline_only(
                     placement_audit.append(audit_entry)
                     unplaced += 1
                     continue
-                if source_rect is None or not translated:
+                if source_rect is None or placement_anchor is None or not translated:
                     placement_audit.append(audit_entry)
                     unplaced += 1
                     continue
                 candidate = _inline_only_rect(
-                    source_rect,
+                    placement_anchor,
                     translated=translated,
                     page_rect=page.rect,
                     occupied=occupied,
                     font=font,
                     rotation=rotation,
+                    max_local_distance=max_local_distance,
                 )
                 if candidate is None:
                     audit_entry["status"] = "rejected_no_near_space"
@@ -802,7 +821,7 @@ def render_bilingual_inline_only(
                     rect.y0 - source_rect.y1,
                     0.0,
                 )
-                if actual_distance > 20.0:
+                if draw_leaders and actual_distance > 20.0:
                     # This is not a numbered reference: it is a thin local
                     # leader joining a dense CAD annotation to its adjacent
                     # Chinese micro-caption. It makes the relationship clear

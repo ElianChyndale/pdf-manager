@@ -3,6 +3,7 @@ from services.engineering_drawing.harness import GeographicResolver
 from services.engineering_drawing.harness import audit_existing_legacy_companions
 from services.engineering_drawing.harness import quality_exceeds_legacy_baseline
 from services.engineering_drawing.harness import run_full_coverage_harness
+from services.engineering_drawing.harness import select_legacy_additions
 
 
 def test_harness_requires_every_non_chinese_non_numeric_region_to_have_chinese_and_placement() -> None:
@@ -147,3 +148,52 @@ def test_legacy_companion_audit_requires_matching_chinese_near_the_source(tmp_pa
     assert len(placements) == 1
     assert placements[0]["placement_origin"] == "legacy_verified"
     assert placements[0]["distance"] < 20
+
+
+def test_legacy_additive_selection_freezes_existing_and_requires_source_approval(tmp_path) -> None:
+    import fitz
+
+    legacy = tmp_path / "legacy.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=160)
+    page.insert_text((20, 40), "EXISTING LABEL", fontsize=10)
+    page.insert_text((20, 54), "既有译文", fontsize=10, fontname="china-s")
+    document.save(legacy)
+    document.close()
+    additions, existing = select_legacy_additions(
+        legacy_pdf_path=legacy,
+        source_regions=[
+            {
+                "region_id": "existing",
+                "page_number": 1,
+                "source_text": "EXISTING LABEL",
+                "translated_text": "既有译文",
+                "bbox": [20, 28, 100, 42],
+                "provenance": "paddle_ocr",
+                "action": "translate",
+                "addition_approval": "ai_verified_source",
+            },
+            {
+                "region_id": "new",
+                "page_number": 1,
+                "source_text": "Distribution Storage Tank",
+                "translated_text": "配水储水罐",
+                "bbox": [140, 28, 250, 42],
+                "provenance": "deepseek_ocr",
+                "action": "translate",
+                "addition_approval": "ai_verified_source",
+            },
+            {
+                "region_id": "unapproved",
+                "page_number": 1,
+                "source_text": "SOME SYMBOL",
+                "translated_text": "某符号",
+                "bbox": [140, 80, 220, 92],
+                "provenance": "paddle_ocr",
+                "action": "translate",
+            },
+        ],
+    )
+
+    assert [item["region_id"] for item in additions] == ["new"]
+    assert [item["region_id"] for item in existing] == ["existing"]
