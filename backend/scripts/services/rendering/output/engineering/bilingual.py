@@ -658,7 +658,32 @@ def _inline_only_rect(
             fitz.Rect(source_rect.x1 + gap, source_rect.y1 - height, source_rect.x1 + gap + width, source_rect.y1),
             fitz.Rect(source_rect.x0 - gap - width, source_rect.y1 - height, source_rect.x0 - gap, source_rect.y1),
         )
-    for candidate in candidates:
+    # Keep the companion local, but allow a small ring search when its immediate
+    # edge is occupied by a dimension line or a neighbouring CAD label.  A
+    # The last radii are a leader-caption fallback for dense equipment notes.
+    # They remain in the same equipment bay / title-block cell rather than a
+    # page margin; the audit records the actual distance so QA can reject a
+    # placement that is no longer visually local.
+    expanded: list[fitz.Rect] = list(candidates)
+    for extra_gap in (8.0, 14.0, 20.0, 28.0, 36.0, 44.0, 60.0, 80.0, 104.0):
+        delta = extra_gap - gap
+        for candidate in candidates:
+            if rotation in {90, 270}:
+                # Vertical captions are narrow; shift only horizontally so the
+                # text keeps the original label's reading axis.
+                if candidate.x0 >= source_rect.x1:
+                    expanded.append(fitz.Rect(candidate.x0 + delta, candidate.y0, candidate.x1 + delta, candidate.y1))
+                elif candidate.x1 <= source_rect.x0:
+                    expanded.append(fitz.Rect(candidate.x0 - delta, candidate.y0, candidate.x1 - delta, candidate.y1))
+            elif candidate.y0 >= source_rect.y1:
+                expanded.append(fitz.Rect(candidate.x0, candidate.y0 + delta, candidate.x1, candidate.y1 + delta))
+            elif candidate.y1 <= source_rect.y0:
+                expanded.append(fitz.Rect(candidate.x0, candidate.y0 - delta, candidate.x1, candidate.y1 - delta))
+            elif candidate.x0 >= source_rect.x1:
+                expanded.append(fitz.Rect(candidate.x0 + delta, candidate.y0, candidate.x1 + delta, candidate.y1))
+            else:
+                expanded.append(fitz.Rect(candidate.x0 - delta, candidate.y0, candidate.x1 - delta, candidate.y1))
+    for candidate in expanded:
         if _is_clear(candidate, occupied, page_rect):
             return candidate, font_size, gap
     return None
@@ -770,12 +795,31 @@ def render_bilingual_inline_only(
                     placement_audit.append(audit_entry)
                     unplaced += 1
                     continue
+                actual_distance = max(
+                    source_rect.x0 - rect.x1,
+                    rect.x0 - source_rect.x1,
+                    source_rect.y0 - rect.y1,
+                    rect.y0 - source_rect.y1,
+                    0.0,
+                )
+                if actual_distance > 20.0:
+                    # This is not a numbered reference: it is a thin local
+                    # leader joining a dense CAD annotation to its adjacent
+                    # Chinese micro-caption. It makes the relationship clear
+                    # when a direct side-by-side slot is physically occupied.
+                    page.draw_line(
+                        source_rect.tl + (source_rect.br - source_rect.tl) * 0.5,
+                        rect.tl + (rect.br - rect.tl) * 0.5,
+                        color=(0.08, 0.20, 0.58),
+                        width=0.28,
+                        overlay=True,
+                    )
                 occupied.append(rect)
                 audit_entry.update(
                     {
                         "status": "inline_near",
                         "target_bbox": list(rect),
-                        "distance": round(distance, 3),
+                        "distance": round(actual_distance, 3),
                     }
                 )
                 placement_audit.append(audit_entry)

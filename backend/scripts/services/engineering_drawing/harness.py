@@ -20,6 +20,8 @@ from typing import Callable, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import fitz
+
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -30,6 +32,7 @@ _GEO_ENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _UNSAFE_STATUSES = {"rejected_invalid", "rejected_unverified_ocr", "rejected_no_near_space", "rejected_text_did_not_fit"}
+_NON_SOURCE_OBSERVATION_STATUSES = {"ai_confirmed_non_language", "ai_confirmed_duplicate_observation"}
 
 
 @dataclass(frozen=True)
@@ -188,6 +191,109 @@ def correct_geographic_regions(
     return [_geo_correct(region, resolver=resolver, context_hints=context_hints) for region in regions]
 
 
+def _region_page_index(region: dict) -> int:
+    raw = region.get("page_index", region.get("page_number", 1))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return value if "page_index" in region else max(0, value - 1)
+
+
+def _display_bbox(region: dict, page: fitz.Page) -> fitz.Rect | None:
+    raw = region.get("bbox") or region.get("source_bbox")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        rect = fitz.Rect(raw)
+    except (TypeError, ValueError):
+        return None
+    if not rect.is_valid or rect.is_empty:
+        return None
+    # Native PDF extraction is in unrotated media-box coordinates. Visual OCR
+    # uses the already displayed raster coordinate system.
+    if str(region.get("provenance") or "") == "native_text":
+        rect = rect * page.rotation_matrix
+    return rect
+
+
+def _rect_distance(first: fitz.Rect, second: fitz.Rect) -> float:
+    dx = max(first.x0 - second.x1, second.x0 - first.x1, 0.0)
+    dy = max(first.y0 - second.y1, second.y0 - first.y1, 0.0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def audit_existing_legacy_companions(
+    *,
+    legacy_pdf_path: Path,
+    regions: Iterable[dict],
+    max_distance: float = 28.0,
+) -> list[dict]:
+    """Verify Chinese already visible in a legacy base before adding another label.
+
+    The audit is intentionally geometric and textual: a generic Chinese word in
+    another part of the page cannot satisfy a source region.  This preserves a
+    correct legacy companion and avoids turning a title block into blue noise.
+    """
+    by_page: dict[int, list[dict]] = {}
+    for region in regions:
+        by_page.setdefault(_region_page_index(region), []).append(dict(region))
+    placements: list[dict] = []
+    document = fitz.open(Path(legacy_pdf_path))
+    try:
+        for page_index, page_regions in by_page.items():
+            if not 0 <= page_index < document.page_count:
+                continue
+            page = document[page_index]
+            chinese_words = [
+                (fitz.Rect(word[:4]) * page.rotation_matrix, str(word[4]))
+                for word in page.get_text("words")
+                if len(word) >= 5 and _has_chinese(word[4])
+            ]
+            for region in page_regions:
+                target = str(region.get("translated_text") or "")
+                source_rect = _display_bbox(region, page)
+                # Preserve a numeric Chinese unit such as ``2层`` / ``3根`` as
+                # one meaningful token. Engineering drawings commonly split a
+                # bilingual row into separate words, so requiring two adjacent
+                # CJK characters would miss a correct existing companion.
+                chunks = [
+                    chunk.replace(" ", "")
+                    for chunk in re.findall(r"(?:\d+(?:[.,]\d+)?\s*)?[\u3400-\u9fff]+", target)
+                    if len(chunk.replace(" ", "")) >= 2
+                ]
+                if source_rect is None or not chunks:
+                    continue
+                best: tuple[float, fitz.Rect, str] | None = None
+                for word_rect, word in chinese_words:
+                    # A meaningful two-character Chinese fragment must match;
+                    # single characters are too ambiguous on dense drawings.
+                    if not any(chunk in word or word in chunk for chunk in chunks):
+                        continue
+                    distance = _rect_distance(source_rect, word_rect)
+                    if distance <= max_distance and (best is None or distance < best[0]):
+                        best = (distance, word_rect, word)
+                if best is None:
+                    continue
+                distance, word_rect, word = best
+                placements.append(
+                    {
+                        "region_id": str(region.get("region_id") or ""),
+                        "page_index": page_index,
+                        "source_text": str(region.get("source_text") or ""),
+                        "source_bbox": list(source_rect),
+                        "status": "inline_near",
+                        "target_bbox": list(word_rect),
+                        "distance": round(distance, 3),
+                        "placement_origin": "legacy_verified",
+                        "legacy_companion_text": word,
+                    }
+                )
+    finally:
+        document.close()
+    return placements
+
+
 def run_full_coverage_harness(
     regions: Iterable[dict],
     *,
@@ -202,6 +308,8 @@ def run_full_coverage_harness(
     required = translated = geo_corrected = placed = 0
     for region in corrected:
         source = str(region.get("source_text") or "").strip()
+        if str(region.get("observation_status") or "") in _NON_SOURCE_OBSERVATION_STATUSES:
+            continue
         if not _is_required_source_text(source):
             continue
         required += 1
