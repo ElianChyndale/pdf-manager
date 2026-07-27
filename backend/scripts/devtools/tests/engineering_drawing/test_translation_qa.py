@@ -434,6 +434,29 @@ def test_translation_qa_gives_ptd_and_malay_road_names_meaningful_chinese_compan
     assert translated["road"] == "费尔达新光路（Jalan Felda Cahaya Baru）"
 
 
+def test_translation_qa_does_not_treat_a_malay_address_as_an_untranslated_literal(tmp_path) -> None:
+    calls: list[dict] = []
+
+    def requester(messages: list[dict[str, str]], **_kwargs: object) -> str:
+        payload = json.loads(messages[-1]["content"])
+        calls.append(payload)
+        item = payload["items"][0]
+        if payload["stage"] == "engineering_translation":
+            assert item["action_hint"] == "translate"
+            return json.dumps({"translations": [{"item_id": item["item_id"], "translated_text": "88-01，实达热带路 1/7，新山", "action": "translate", "issues": []}]}, ensure_ascii=False)
+        return json.dumps({"reviews": [{"item_id": item["item_id"], "verdict": "accepted", "translated_text": item["translated_text"], "issues": []}]}, ensure_ascii=False)
+
+    result = translate_and_judge_engineering_regions(
+        [{"region_id": "address", "source_text": "88-01, Jalan Setia Tropika 1/7, Johor Bahru", "source_language": "ms", "action": "keep_literal"}],
+        api_key="test-key",
+        cache_path=tmp_path / "cache.json",
+        request_chat_content_fn=requester,
+    )
+
+    assert result.regions[0]["action"] == "translate"
+    assert result.regions[0]["translated_text"] == "88-01，实达热带路 1/7，新山"
+
+
 def test_translation_qa_repairs_english_only_candidate_before_semantic_qa(tmp_path) -> None:
     calls: list[str] = []
 

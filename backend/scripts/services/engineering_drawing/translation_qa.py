@@ -45,6 +45,11 @@ _LITERAL_DESCRIPTOR_OVERRIDES = {
     "elec": "电气（原文：ELEC）",
     "mech": "机械（原文：MECH）",
 }
+_NATURAL_LANGUAGE_HINTS = {
+    "jalan", "taman", "kampung", "bandar", "johor", "selangor", "kuala", "level",
+    "consultant", "architect", "developer", "project", "proposed", "building", "system",
+    "water", "tank", "pump", "trench", "boundary", "setback", "website", "email",
+}
 
 ChatRequester = Callable[..., str]
 
@@ -61,6 +66,16 @@ def _normalized(value: object) -> str:
 
 def _source_text(region: dict) -> str:
     return str(region.get("source_text") or region.get("text") or "").strip()
+
+
+def _requires_natural_language_translation(source_text: str) -> bool:
+    """Override a permissive OCR/code classifier for readable prose/address text."""
+    words = re.findall(r"[A-Za-z]{3,}", str(source_text or "").casefold())
+    if any(word in _NATURAL_LANGUAGE_HINTS for word in words):
+        return True
+    # Multi-word labels are readable language even when they start with a lot
+    # number or company abbreviation.  Short technical codes remain literals.
+    return len(words) >= 2 and any(len(word) >= 4 for word in words)
 
 
 def _is_latin_candidate(region: dict) -> bool:
@@ -457,6 +472,8 @@ def translate_and_judge_engineering_regions(
             continue
         source = _source_text(region)
         action_hint = str(region.get("action") or "translate").strip().lower()
+        if action_hint == "keep_literal" and _requires_natural_language_translation(source):
+            action_hint = "translate"
         key = _cache_key(
             source_text=source,
             source_language=_language(region),

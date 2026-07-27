@@ -10,6 +10,7 @@ from services.engineering_drawing.sample_builder import _merge_vector_outline_ph
 from services.engineering_drawing.sample_builder import _offline_translation
 from services.engineering_drawing.sample_builder import _sample_regions
 from services.engineering_drawing.translation_qa import EngineeringTranslationResult
+from services.rendering.output.engineering.bilingual import _source_text_rects
 
 
 def test_offline_sample_glossary_preserves_numeric_annotation() -> None:
@@ -19,6 +20,19 @@ def test_offline_sample_glossary_preserves_numeric_annotation() -> None:
 
 def test_offline_sample_glossary_handles_fixed_vector_regression() -> None:
     assert _offline_translation("DEPOH LORI") == "卡车车库"
+
+
+def test_inline_layout_uses_word_bounds_not_a_whole_title_block() -> None:
+    document = fitz.open()
+    page = document.new_page(width=300, height=120)
+    page.insert_text((20, 30), "PSB ASSOCIATES SDN. BHD.", fontsize=12)
+    page.insert_text((20, 55), "88-01, Jalan Setia Tropika 1/7", fontsize=9)
+
+    bounds = _source_text_rects(page)
+
+    assert len(bounds) >= 8  # individual words, rather than one large cell block
+    assert max(rect.width for rect in bounds) < 80
+    document.close()
 
 
 def test_sample_builder_rejects_incomplete_legacy_translation() -> None:

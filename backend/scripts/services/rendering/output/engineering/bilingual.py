@@ -143,8 +143,15 @@ def _occupied_rects(page: fitz.Page) -> list[fitz.Rect]:
 
 
 def _source_text_rects(page: fitz.Page) -> list[fitz.Rect]:
-    """Return only source text bounds; safe for CAD sheets with huge vectors."""
-    return [fitz.Rect(block[:4]) for block in page.get_text("blocks") if len(block) >= 4]
+    """Return source *word* bounds, not broad PDF text blocks.
+
+    CAD title blocks frequently expose an entire table cell (or a rotated
+    column) as one PDF text block.  Treating that envelope as ink makes the
+    legitimate empty area beside a tank, road label or address unavailable to
+    the bilingual layout.  Word-level bounds remain a hard no-overlap boundary
+    while allowing a nearby Chinese companion in the same cell.
+    """
+    return [fitz.Rect(word[:4]) for word in page.get_text("words") if len(word) >= 4]
 
 
 def _is_clear(rect: fitz.Rect, occupied: list[fitz.Rect], page_rect: fitz.Rect) -> bool:
@@ -612,7 +619,12 @@ def _inline_only_rect(
     its source at a glance.  This helper therefore considers only adjoining
     rectangles and returns ``None`` when the source neighbourhood is occupied.
     """
-    font_size = max(3.8, min(6.8, max(4.2, source_rect.height * 0.62)))
+    # Dense CAD annotations are often materially smaller than conventional
+    # document text.  A missing companion is worse than a 2.4pt caption when
+    # viewed at the drawing's native zoom, so start from the source size and
+    # permit a controlled micro-caption fallback.  The caller still rejects a
+    # rectangle that touches source text.
+    font_size = max(2.4, min(6.8, max(3.2, source_rect.height * 0.58)))
     # _is_clear applies 1.5pt padding around both rectangles; leave enough room
     # for a caption immediately beside a source label to remain selectable.
     gap = max(3.2, font_size * 0.45)
@@ -634,11 +646,17 @@ def _inline_only_rect(
     else:
         width = min(max(34.0, font.text_length(translated, fontsize=font_size) + 5.0), page_rect.width * 0.16)
         height = max(font_size * 1.45, _text_height(translated, width - 3.0, font, font_size, line_gap=1.12) + 1.5)
+        # Two extra side candidates make title-block rows and labels embedded
+        # in linework placeable without falling back to a distant blank margin.
         candidates = (
             fitz.Rect(source_rect.x0, source_rect.y1 + gap, source_rect.x0 + width, source_rect.y1 + gap + height),
             fitz.Rect(source_rect.x0, source_rect.y0 - gap - height, source_rect.x0 + width, source_rect.y0 - gap),
             fitz.Rect(source_rect.x1 - width, source_rect.y1 + gap, source_rect.x1, source_rect.y1 + gap + height),
             fitz.Rect(source_rect.x1 - width, source_rect.y0 - gap - height, source_rect.x1, source_rect.y0 - gap),
+            fitz.Rect(source_rect.x1 + gap, source_rect.y0, source_rect.x1 + gap + width, source_rect.y0 + height),
+            fitz.Rect(source_rect.x0 - gap - width, source_rect.y0, source_rect.x0 - gap, source_rect.y0 + height),
+            fitz.Rect(source_rect.x1 + gap, source_rect.y1 - height, source_rect.x1 + gap + width, source_rect.y1),
+            fitz.Rect(source_rect.x0 - gap - width, source_rect.y1 - height, source_rect.x0 - gap, source_rect.y1),
         )
     for candidate in candidates:
         if _is_clear(candidate, occupied, page_rect):
@@ -692,8 +710,14 @@ def render_bilingual_inline_only(
             # We intentionally do not inspect every CAD vector path: it is both
             # expensive and too conservative on dense drawings.  Visual-OCR
             # bboxes fill the gap for outlines / raster labels.
+            # Do not turn every OCR observation into an obstacle.  The same
+            # source label is often observed by native extraction, full-page
+            # OCR and overlapping tiles; treating all those bboxes as occupied
+            # was the reason a prior release silently lost dense labels.  The
+            # page's actual selectable text plus accepted Chinese captions are
+            # the collision boundary; vector-only labels are protected by their
+            # own source rectangle below.
             occupied = [rect for rect in _source_text_rects(source_page) if rect.is_valid]
-            occupied.extend(rect for region in page_regions if (rect := _valid_bbox(region)) is not None)
             for region in page_regions:
                 source_rect = _valid_bbox(region)
                 translated = _compact_inline_text(_translated_text(region))
@@ -737,7 +761,7 @@ def render_bilingual_inline_only(
                     translated,
                     font_path=selected_font_path,
                     font_size=font_size,
-                    min_font_size=3.6,
+                    min_font_size=2.2,
                     color=(0.08, 0.20, 0.58),
                     rotate=rotation,
                 )
