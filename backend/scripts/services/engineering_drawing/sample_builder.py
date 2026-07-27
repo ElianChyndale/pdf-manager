@@ -4,6 +4,7 @@ import csv
 import html
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,10 @@ from services.rendering.output.engineering import render_bilingual_inline_only
 
 from .hybrid_ocr import HybridOcrConfig
 from .hybrid_ocr import run_hybrid_ocr
+from .harness import GeographicResolver
+from .harness import correct_geographic_regions
+from .harness import run_full_coverage_harness
+from .harness import write_harness_reports
 from .translation_qa import translate_and_judge_engineering_regions
 
 
@@ -609,34 +614,26 @@ def _write_glossary_and_tm(
 
 
 def _inline_visual_regions(regions: list[dict]) -> list[dict]:
-    """Keep a calm client-facing drawing while the audit retains every code."""
-    compact: list[dict] = []
-    meaningful_literals = {"in", "out", "hv", "lv", "elec", "mech", "car"}
+    """Return every verified bilingual region; rendering must never hide text.
+
+    Layout density is a placement problem, never a reason to exclude a readable
+    English / Malay source item.  The release harness blocks a page whose
+    regions cannot all be placed safely.
+    """
+    visible: list[dict] = []
     for raw in regions:
         region = dict(raw)
         source = str(region.get("source_text") or "").strip()
         target = str(region.get("translated_text") or "").strip()
         if not source or not target:
             continue
-        if str(region.get("action") or "") == "keep_literal":
-            # A literal is visible only when its Chinese companion adds actual
-            # semantic value.  Generic "drawing/equipment identifier" captions
-            # produce visual noise; land-title and road-name descriptors do not.
-            meaningful = (
-                _normalized(source) in meaningful_literals
-                or _normalized(source).startswith("ptd")
-                or "道路名称" in target
-                or "费尔达新光路" in target
-            )
-            if not meaningful:
-                continue
-        if {str(flag) for flag in (region.get("qa_flags") or [])}.intersection(
-            {"manual_review_required", "deepseek_ocr_conflict", "low_paddle_confidence", "ai_qa_missing"}
-        ):
+        # A review item has no verified Chinese translation yet.  It is kept in
+        # the blocking harness report rather than falsely rendered as complete.
+        if str(region.get("action") or "") == "review":
             continue
         region["placement"] = "inline_only"
-        compact.append(region)
-    return compact
+        visible.append(region)
+    return visible
 
 
 def build_samples(
@@ -649,6 +646,7 @@ def build_samples(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     enable_deepseek_ocr: bool = True,
+    enable_geographic_lookup: bool = True,
     ocr_config: HybridOcrConfig | None = None,
     fast_preview: bool = False,
 ) -> dict[str, object]:
@@ -713,6 +711,18 @@ def build_samples(
                 regression_regions,
             )
         )
+        geo_context = ["Malaysia"]
+        joined_source = " ".join(str(region.get("source_text") or "") for region in ocr_regions).casefold()
+        if "johor" in joined_source:
+            geo_context.append("Johor Bahru")
+        ocr_regions = correct_geographic_regions(
+            ocr_regions,
+            resolver=GeographicResolver(
+                cache_path=output_root / "05_Glossary_TM" / "geographic-entity-cache.json",
+                allow_online=enable_geographic_lookup,
+            ),
+            context_hints=geo_context,
+        )
         translation_result = translate_and_judge_engineering_regions(
             ocr_regions,
             api_key=resolved_api_key,
@@ -725,10 +735,7 @@ def build_samples(
         for region in translation_result.regions:
             status = str(region.get("coverage_status") or "")
             if status in {"translated", "literal_labeled"} and str(region.get("translated_text") or "").strip():
-                # Dense CAD layers use the lossless, numbered reference page.
-                # This avoids covering dimension lines while retaining a Chinese
-                # companion and source-to-reference mapping for every item.
-                region["placement"] = "reference"
+                region["placement"] = "inline_only"
                 regions.append(region)
             elif (
                 re.search(r"[A-Za-z]", str(region.get("source_text") or ""))
@@ -743,13 +750,33 @@ def build_samples(
         )
         translated_regions.extend(regions)
         bilingual_path = output_root / "01_Bilingual_Inline" / f"{sample.output_stem}-inline-only.pdf"
+        draft_path = output_root / "06_Manual_Review" / f"{sample.output_stem}-inline-layout-draft.pdf"
         dual_path = ""
+        harness_path = output_root / "04_QA_Reports" / f"{sample.output_stem}-coverage-harness.json"
+        harness_report: dict[str, object] = {"passed": False, "blocking_regions": len(regions)}
         if bool(translation_result.report.get("passed")):
             render_bilingual_inline_only(
                 source_pdf_path=sample_source,
-                output_pdf_path=bilingual_path,
+                output_pdf_path=draft_path,
                 regions=_inline_visual_regions(regions),
             )
+            placement_path = draft_path.with_suffix(".inline-placement.json")
+            placement = json.loads(placement_path.read_text(encoding="utf-8")).get("placements", [])
+            harness = run_full_coverage_harness(
+                translation_result.regions,
+                placement_audit=placement,
+                geographic_resolver=None,
+                context_hints=geo_context,
+            )
+            harness_json, _harness_csv = write_harness_reports(harness, output_json=harness_path)
+            harness_report = dict(harness.report)
+            harness_path = harness_json
+            if bool(harness.report.get("passed")):
+                bilingual_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(draft_path, bilingual_path)
+                shutil.copy2(placement_path, bilingual_path.with_suffix(".inline-placement.json"))
+            else:
+                bilingual_path = ""
         else:
             # Do not place a partial file in either formal-delivery directory.
             bilingual_path = ""
@@ -776,12 +803,13 @@ def build_samples(
                 "vector_regression_crop_ocr": str(regression_ocr_path) if regression_crop_path else "",
                 "coverage_json": str(coverage_path),
                 "coverage_csv": str(coverage_csv_path),
+                "coverage_harness": str(harness_path),
                 "ocr_cache_hit": ocr_cache_hit,
                 "vector_regression_crop_cache_hit": regression_ocr_result.cache_hit if regression_ocr_result else False,
                 "fast_preview": fast_preview,
                 "placed_regions": len(regions),
                 "unresolved_regions": len(unresolved),
-                "coverage_passed": bool(translation_result.report.get("passed")),
+                "coverage_passed": bool(translation_result.report.get("passed")) and bool(harness_report.get("passed")),
                 "translation_api_calls": translation_result.report.get("translation_api_calls", 0),
                 "qa_api_calls": translation_result.report.get("qa_api_calls", 0),
             }

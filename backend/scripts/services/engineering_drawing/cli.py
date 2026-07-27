@@ -14,6 +14,9 @@ from .reports import write_report_bundle
 from .sample_builder import build_samples
 from .hybrid_ocr import HybridOcrConfig
 from .hybrid_ocr import run_hybrid_ocr
+from .harness import GeographicResolver
+from .harness import run_full_coverage_harness
+from .harness import write_harness_reports
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     samples.add_argument("--model", default=DEFAULT_MODEL)
     samples.add_argument("--base-url", default=DEFAULT_BASE_URL)
     samples.add_argument("--no-deepseek-ocr", action="store_true")
+    samples.add_argument("--no-geographic-lookup", action="store_true")
     ocr = subparsers.add_parser("ocr")
     ocr.add_argument("--pdf", required=True, type=Path)
     ocr.add_argument("--output", required=True, type=Path)
@@ -44,6 +48,13 @@ def _parser() -> argparse.ArgumentParser:
     ocr.add_argument("--end-page", type=int, default=-1)
     ocr.add_argument("--dpi", type=int, default=220)
     ocr.add_argument("--no-deepseek", action="store_true")
+    harness = subparsers.add_parser("harness")
+    harness.add_argument("--coverage-json", required=True, type=Path)
+    harness.add_argument("--placement-audit", type=Path)
+    harness.add_argument("--output", required=True, type=Path)
+    harness.add_argument("--geo-cache", type=Path)
+    harness.add_argument("--online-geo", action="store_true")
+    harness.add_argument("--context", action="append", default=[])
     return parser
 
 
@@ -59,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                     model=args.model,
                     base_url=args.base_url,
                     enable_deepseek_ocr=not args.no_deepseek_ocr,
+                    enable_geographic_lookup=not args.no_geographic_lookup,
                 ),
                 ensure_ascii=False,
                 indent=2,
@@ -77,6 +89,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
         return 0
+    if args.command == "harness":
+        coverage = json.loads(args.coverage_json.read_text(encoding="utf-8"))
+        placement = []
+        if args.placement_audit and args.placement_audit.exists():
+            placement = json.loads(args.placement_audit.read_text(encoding="utf-8")).get("placements", [])
+        result = run_full_coverage_harness(
+            coverage.get("regions", []),
+            placement_audit=placement,
+            geographic_resolver=GeographicResolver(cache_path=args.geo_cache, allow_online=args.online_geo),
+            context_hints=args.context,
+        )
+        json_path, csv_path = write_harness_reports(result, output_json=args.output)
+        print(json.dumps({"report": result.report, "json": str(json_path), "csv": str(csv_path)}, ensure_ascii=False, indent=2))
+        return 0 if bool(result.report["passed"]) else 2
     inventory = build_inventory(args.root)
     manifest_json, manifest_csv = inventory.write(args.output)
     response: dict[str, object] = {
