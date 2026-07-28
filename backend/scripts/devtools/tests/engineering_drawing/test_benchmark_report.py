@@ -1,3 +1,4 @@
+import json
 import math
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from services.engineering_drawing.benchmark.report import (
     render_comparison,
     write_benchmark_report,
 )
+from services.engineering_drawing.benchmark.scoring import score_sample
 
 
 def _pdf(path: Path, text: str, *, width: float = 200, height: float = 120) -> None:
@@ -45,6 +47,82 @@ def _summary(workspace: Path, **changes: object) -> dict:
     }
     value.update(changes)
     return value
+
+
+def _scored_sample(workspace: Path) -> dict:
+    scored = score_sample(
+        gold_blocks=[
+            {
+                "block_id": "core-03-b001",
+                "gold_translation": "屋面系统",
+                "literal_tokens": [],
+                "merge_decision": "single",
+                "rotation": 0,
+                "allowed_regions": [[0, 0, 100, 100]],
+                "forbidden_zones": [],
+                "font_size_range": [3.2, 6.5],
+                "leader": {
+                    "allowed": False,
+                    "required": False,
+                    "color": "dark_blue",
+                    "width_points": 0.32,
+                    "route": "orthogonal",
+                    "arrow": False,
+                },
+                "manual_review_required": False,
+            }
+        ],
+        candidate_blocks=[
+            {
+                "block_id": "core-03-b001",
+                "translated_text": "ROOF SYSTEM",
+                "merge_decision": "single",
+                "rotation": 0,
+                "target_bbox": [10, 10, 50, 30],
+                "font_size": 5,
+                "leader": {"status": "not_needed"},
+            }
+        ],
+        visual_qa={
+            "visual_overlap_count": 0,
+            "leader_collision_count": 0,
+            "untranslated_candidate_count": 0,
+        },
+        pdf_diagnostics={
+            "replacement_characters": 0,
+            "private_use_characters": 0,
+            "clipped_or_outside_count": 0,
+        },
+        subjective={"layout_association": 20, "page_readability": 15},
+    )
+    return {
+        "sample_id": "core-03",
+        "set_name": "core",
+        "category": "roof_detail",
+        "comparison_png": _comparison(workspace, "core-03.png"),
+        **scored,
+    }
+
+
+def _full_summary(workspace: Path) -> dict:
+    sample = _scored_sample(workspace)
+    return {
+        "schema": "engineering-drawing-benchmark-report-v1",
+        "samples": [sample],
+        "core_score": sample["score"],
+        "hard_failure_count": sample["hard_failure_count"],
+        "manual_review_rate": 0.0,
+        "automation_rate": 1.0,
+        "category_scores": {"roof_detail": sample["score"]},
+        "challenge_pass_rate": 1.0,
+        "challenge_sample_count": 0,
+        "promotion": {
+            "promote": False,
+            "reasons": ["insufficient_core_gain"],
+            "core_score_gain": 0.0,
+            "new_hard_failure_ids": [],
+        },
+    }
 
 
 def _directory_link_or_skip(link: Path, target: Path) -> None:
@@ -112,6 +190,25 @@ def test_render_comparison_accepts_differing_page_geometries(tmp_path: Path):
         assert opened.size == (500, 180)
 
 
+def test_render_comparison_safely_ignores_valid_source_markers(tmp_path: Path):
+    source = tmp_path / "source.pdf"
+    candidate = tmp_path / "candidate.pdf"
+    output = tmp_path / "comparison.png"
+    _pdf(source, "SOURCE")
+    _pdf(candidate, "CANDIDATE")
+
+    render_comparison(
+        source,
+        candidate,
+        output,
+        [{"side": "source", "bbox": [10, 10, 80, 30], "code": "source_only"}],
+        dpi=72,
+    )
+
+    with Image.open(output) as opened:
+        assert opened.getpixel((10, 10)) != (220, 30, 30)
+
+
 def test_report_accepts_an_empty_canonical_sample_list(tmp_path: Path):
     json_path, html_path = write_benchmark_report(
         {
@@ -145,7 +242,7 @@ def test_render_comparison_rejects_invalid_dpi_before_opening_pdfs(
     "marker",
     [
         {},
-        {"side": "source", "bbox": [10, 10, 80, 30], "code": "missing"},
+        {"side": "unsupported", "bbox": [10, 10, 80, 30], "code": "missing"},
         {"side": "candidate", "bbox": [10, 10, 80, 30], "code": ""},
         {"side": "candidate", "bbox": [10, 10, 80, 30], "code": "x" * 129},
         {"side": "candidate", "bbox": [10, 10, 10, 30], "code": "missing"},
@@ -262,6 +359,40 @@ def test_report_writes_atomic_json_html_and_url_quoted_escaped_links(tmp_path: P
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "href='../comparisons/comparison%20test%20%231.png'" in html
     assert "Engineering Drawing Benchmark" in html
+
+
+def test_report_preserves_the_full_task_seven_evaluation_contract(tmp_path: Path):
+    summary = _full_summary(tmp_path)
+
+    json_path, html_path = write_benchmark_report(summary, tmp_path)
+
+    assert json.loads(json_path.read_text(encoding="utf-8")) == summary
+    assert "roof_detail" in html_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.update(hard_failure_count=True),
+        lambda value: value["category_scores"].update(roof_detail=math.nan),
+        lambda value: value["samples"][0]["dimensions"].update(
+            semantic_terminology=math.inf
+        ),
+        lambda value: value["samples"][0].update(set_name="unsupported"),
+        lambda value: value["samples"][0].update(hard_failure_ids=["wrong-id"]),
+        lambda value: value["promotion"].update(promote="yes"),
+    ],
+)
+def test_report_rejects_malformed_task_seven_contract_fields(
+    tmp_path: Path, mutate: object
+):
+    summary = _full_summary(tmp_path)
+    mutate(summary)  # type: ignore[operator]
+
+    with pytest.raises(ValueError):
+        write_benchmark_report(summary, tmp_path)
+
+    assert not (tmp_path / "reports").exists()
 
 
 def test_report_rejects_comparisons_directory_linked_outside_workspace(

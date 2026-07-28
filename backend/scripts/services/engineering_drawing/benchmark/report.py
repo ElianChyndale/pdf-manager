@@ -24,14 +24,54 @@ _MAX_SAMPLE_ID_LENGTH = 128
 _MAX_CATEGORY_LENGTH = 256
 _MAX_COMPARISON_PATH_LENGTH = 512
 _MAX_HARD_FAILURE_COUNT = 1_000_000
+_MAX_FAILURE_FIELDS = 64
+_MAX_FAILURE_TOKENS = 64
+_MAX_PROMOTION_REASONS = 128
 _MARKER_KEYS = {"side", "bbox", "code"}
-_SUMMARY_KEYS = {"schema", "core_score", "samples"}
-_SAMPLE_KEYS = {
+_LEGACY_SUMMARY_KEYS = {"schema", "core_score", "samples"}
+_FULL_SUMMARY_KEYS = {
+    *_LEGACY_SUMMARY_KEYS,
+    "hard_failure_count",
+    "manual_review_rate",
+    "automation_rate",
+    "category_scores",
+    "challenge_pass_rate",
+    "challenge_sample_count",
+}
+_FULL_SUMMARY_WITH_PROMOTION_KEYS = {*_FULL_SUMMARY_KEYS, "promotion"}
+_LEGACY_SAMPLE_KEYS = {
     "sample_id",
     "category",
     "score",
     "hard_failure_count",
     "comparison_png",
+}
+_FULL_SAMPLE_KEYS = {
+    "sample_id",
+    "set_name",
+    "category",
+    "comparison_png",
+    "schema",
+    "hard_failures",
+    "hard_failure_ids",
+    "hard_failure_count",
+    "dimensions",
+    "score",
+    "passed",
+}
+_DIMENSION_MAXIMA = {
+    "semantic_terminology": 30.0,
+    "coverage_deduplication": 20.0,
+    "semantic_grouping": 15.0,
+    "layout_association": 20.0,
+    "page_readability": 15.0,
+}
+_HARD_FAILURE_KEYS = {"code", "block_id", "region_id", "fields", "tokens"}
+_PROMOTION_KEYS = {
+    "promote",
+    "reasons",
+    "core_score_gain",
+    "new_hard_failure_ids",
 }
 
 
@@ -138,7 +178,11 @@ def _page_image(path: Path, dpi: int) -> tuple[Image.Image, tuple[float, float]]
     return image, (width, height)
 
 
-def _markers(value: object, page_width: float, page_height: float) -> list[dict]:
+def _markers(
+    value: object,
+    source_size: tuple[float, float],
+    candidate_size: tuple[float, float],
+) -> list[dict]:
     if type(value) is not list or len(value) > _MAX_MARKERS:
         raise ValueError("markers must be a bounded list")
     markers: list[dict] = []
@@ -146,8 +190,8 @@ def _markers(value: object, page_width: float, page_height: float) -> list[dict]
         label = f"marker {index}"
         if type(marker) is not dict or set(marker) != _MARKER_KEYS:
             raise ValueError(f"{label} must have exactly side, bbox, and code")
-        if marker["side"] != "candidate":
-            raise ValueError(f"{label} side must be candidate")
+        if marker["side"] not in {"source", "candidate"}:
+            raise ValueError(f"{label} side must be source or candidate")
         code = _bounded_string(marker["code"], f"{label} code", _MAX_CODE_LENGTH)
         bbox = marker["bbox"]
         if type(bbox) is not list or len(bbox) != 4:
@@ -156,9 +200,14 @@ def _markers(value: object, page_width: float, page_height: float) -> list[dict]
             _finite_number(coordinate, f"{label} bbox", 0.0, float("inf"))
             for coordinate in bbox
         )
+        page_width, page_height = (
+            source_size if marker["side"] == "source" else candidate_size
+        )
         if x0 >= x1 or y0 >= y1 or x1 > page_width or y1 > page_height:
-            raise ValueError(f"{label} bbox must be ordered and inside the candidate page")
-        markers.append({"side": "candidate", "bbox": [x0, y0, x1, y1], "code": code})
+            raise ValueError(f"{label} bbox must be ordered and inside its page")
+        markers.append(
+            {"side": marker["side"], "bbox": [x0, y0, x1, y1], "code": code}
+        )
     return markers
 
 
@@ -192,12 +241,14 @@ def render_comparison(
     candidate: Image.Image | None = None
     canvas: Image.Image | None = None
     try:
-        source, _ = _page_image(source_path, validated_dpi)
+        source, source_size = _page_image(source_path, validated_dpi)
         candidate, candidate_size = _page_image(candidate_path, validated_dpi)
-        validated_markers = _markers(markers, *candidate_size)
+        validated_markers = _markers(markers, source_size, candidate_size)
         scale = validated_dpi / 72
         draw = ImageDraw.Draw(candidate)
         for marker in validated_markers:
+            if marker["side"] != "candidate":
+                continue
             x0, y0, x1, y1 = (coordinate * scale for coordinate in marker["bbox"])
             draw.rectangle(
                 (x0, y0, x1, y1),
@@ -257,44 +308,227 @@ def _comparison_link(workspace: Path, value: object) -> str:
     return quote(relative.as_posix(), safe="/")
 
 
+def _bounded_counter(value: object, label: str) -> int:
+    if type(value) is not int or not 0 <= value <= _MAX_HARD_FAILURE_COUNT:
+        raise ValueError(f"{label} must be a bounded integer")
+    return value
+
+
+def _string_list(value: object, label: str, maximum: int) -> list[str]:
+    if type(value) is not list or len(value) > maximum:
+        raise ValueError(f"{label} must be a bounded list")
+    return [_bounded_string(item, label, _MAX_CODE_LENGTH) for item in value]
+
+
+def _failure_identity(value: dict) -> str:
+    scope = value.get("block_id", value.get("region_id"))
+    return value["code"] if scope is None else f"{value['code']}:{scope}"
+
+
+def _validated_hard_failures(value: object, label: str) -> list[dict]:
+    if type(value) is not list or len(value) > _MAX_HARD_FAILURE_COUNT:
+        raise ValueError(f"{label} hard_failures must be a bounded list")
+    failures: list[dict] = []
+    for index, failure in enumerate(value):
+        failure_label = f"{label} hard_failures[{index}]"
+        if type(failure) is not dict or not {"code"} <= set(failure) <= _HARD_FAILURE_KEYS:
+            raise ValueError(f"{failure_label} must use the score failure schema")
+        if "block_id" in failure and "region_id" in failure:
+            raise ValueError(f"{failure_label} cannot have both block_id and region_id")
+        normalized = {"code": _bounded_string(failure["code"], failure_label, _MAX_CODE_LENGTH)}
+        for scope in ("block_id", "region_id"):
+            if scope in failure:
+                normalized[scope] = _bounded_string(
+                    failure[scope], f"{failure_label} {scope}", _MAX_SAMPLE_ID_LENGTH
+                )
+        if "fields" in failure:
+            fields = _string_list(failure["fields"], f"{failure_label} fields", _MAX_FAILURE_FIELDS)
+            if fields != sorted(set(fields)):
+                raise ValueError(f"{failure_label} fields must be sorted and unique")
+            normalized["fields"] = fields
+        if "tokens" in failure:
+            normalized["tokens"] = _string_list(
+                failure["tokens"], f"{failure_label} tokens", _MAX_FAILURE_TOKENS
+            )
+        failures.append(normalized)
+    return failures
+
+
+def _validated_dimensions(value: object, label: str) -> dict[str, float]:
+    if type(value) is not dict or set(value) != set(_DIMENSION_MAXIMA):
+        raise ValueError(f"{label} dimensions must use the score dimension schema")
+    return {
+        key: _finite_number(value[key], f"{label} dimensions.{key}", 0.0, maximum)
+        for key, maximum in _DIMENSION_MAXIMA.items()
+    }
+
+
+def _validated_full_sample(sample: dict, label: str) -> tuple[dict, dict]:
+    if set(sample) != _FULL_SAMPLE_KEYS:
+        raise ValueError(f"{label} must use the complete score sample schema")
+    sample_id = _bounded_string(sample["sample_id"], f"{label} sample_id", _MAX_SAMPLE_ID_LENGTH)
+    set_name = sample["set_name"]
+    if set_name not in {"core", "challenge"}:
+        raise ValueError(f"{label} set_name must be core or challenge")
+    category = _bounded_string(sample["category"], f"{label} category", _MAX_CATEGORY_LENGTH)
+    if sample["schema"] != "engineering-drawing-score-v1":
+        raise ValueError(f"{label} has an unsupported score schema")
+    failures = _validated_hard_failures(sample["hard_failures"], label)
+    failure_ids = _string_list(
+        sample["hard_failure_ids"], f"{label} hard_failure_ids", _MAX_HARD_FAILURE_COUNT
+    )
+    if len(set(failure_ids)) != len(failure_ids):
+        raise ValueError(f"{label} hard_failure_ids must be unique")
+    expected_ids = sorted(_failure_identity(failure) for failure in failures)
+    if failure_ids != expected_ids:
+        raise ValueError(f"{label} hard_failure_ids must match hard_failures")
+    count = _bounded_counter(sample["hard_failure_count"], f"{label} hard_failure_count")
+    if count != len(failures):
+        raise ValueError(f"{label} hard_failure_count must match hard_failures")
+    dimensions = _validated_dimensions(sample["dimensions"], label)
+    score = _finite_number(sample["score"], f"{label} score", 0.0, 100.0)
+    if abs(score - round(sum(dimensions.values()), 3)) > 1e-9:
+        raise ValueError(f"{label} score must match dimensions")
+    if type(sample["passed"]) is not bool or sample["passed"] != (count == 0):
+        raise ValueError(f"{label} passed must match hard failures")
+    row = {
+        "sample_id": sample_id,
+        "category": category,
+        "score": score,
+        "hard_failure_count": count,
+        "comparison_link": None,
+    }
+    return row, {
+        "set_name": set_name,
+        "category": category,
+        "score": score,
+        "hard_failure_count": count,
+        "passed": sample["passed"],
+        "comparison_png": sample["comparison_png"],
+    }
+
+
+def _validated_promotion(value: object) -> None:
+    if type(value) is not dict or set(value) != _PROMOTION_KEYS:
+        raise ValueError("promotion must use the promotion decision schema")
+    if type(value["promote"]) is not bool:
+        raise ValueError("promotion promote must be boolean")
+    reasons = _string_list(value["reasons"], "promotion reasons", _MAX_PROMOTION_REASONS)
+    if len(set(reasons)) != len(reasons):
+        raise ValueError("promotion reasons must be unique")
+    gain = value["core_score_gain"]
+    if gain is not None:
+        _finite_number(gain, "promotion core_score_gain", -100.0, 100.0)
+    new_failure_ids = _string_list(
+        value["new_hard_failure_ids"],
+        "promotion new_hard_failure_ids",
+        _MAX_HARD_FAILURE_COUNT,
+    )
+    if new_failure_ids != sorted(set(new_failure_ids)):
+        raise ValueError("promotion new_hard_failure_ids must be sorted and unique")
+
+
+def _validated_aggregate(summary: dict, full_samples: list[dict]) -> None:
+    total_failures = sum(sample["hard_failure_count"] for sample in full_samples)
+    if _bounded_counter(summary["hard_failure_count"], "hard_failure_count") != total_failures:
+        raise ValueError("hard_failure_count must match samples")
+    _finite_number(summary["manual_review_rate"], "manual_review_rate", 0.0, 1.0)
+    _finite_number(summary["automation_rate"], "automation_rate", 0.0, 1.0)
+    _finite_number(summary["challenge_pass_rate"], "challenge_pass_rate", 0.0, 1.0)
+    core_samples = [sample for sample in full_samples if sample["set_name"] == "core"]
+    challenge_samples = [
+        sample for sample in full_samples if sample["set_name"] == "challenge"
+    ]
+    if _bounded_counter(
+        summary["challenge_sample_count"], "challenge_sample_count"
+    ) != len(challenge_samples):
+        raise ValueError("challenge_sample_count must match challenge samples")
+    expected_challenge_rate = (
+        sum(sample["passed"] for sample in challenge_samples) / len(challenge_samples)
+        if challenge_samples
+        else 1.0
+    )
+    if (
+        abs(
+            _finite_number(
+                summary["challenge_pass_rate"], "challenge_pass_rate", 0.0, 1.0
+            )
+            - expected_challenge_rate
+        )
+        > 1e-9
+    ):
+        raise ValueError("challenge_pass_rate must match challenge samples")
+    category_scores = summary["category_scores"]
+    expected_categories = {sample["category"] for sample in core_samples}
+    if (
+        type(category_scores) is not dict
+        or len(category_scores) > _MAX_SAMPLES
+        or set(category_scores) != expected_categories
+    ):
+        raise ValueError("category_scores must match core sample categories")
+    for category, score in category_scores.items():
+        _bounded_string(category, "category_scores key", _MAX_CATEGORY_LENGTH)
+        expected = sum(
+            sample["score"] for sample in core_samples if sample["category"] == category
+        ) / sum(1 for sample in core_samples if sample["category"] == category)
+        if abs(_finite_number(score, f"category_scores.{category}", 0.0, 100.0) - expected) > 1e-9:
+            raise ValueError(f"category_scores.{category} must match samples")
+    expected_core = sum(sample["score"] for sample in core_samples) / max(1, len(core_samples))
+    if abs(_finite_number(summary["core_score"], "core_score", 0.0, 100.0) - expected_core) > 1e-9:
+        raise ValueError("core_score must match core samples")
+
+
 def _validated_summary(summary: object, workspace: Path) -> tuple[dict, list[dict]]:
-    if type(summary) is not dict or set(summary) != _SUMMARY_KEYS:
+    if type(summary) is not dict or summary.get("schema") != _REPORT_SCHEMA:
         raise ValueError("summary must use the canonical report schema")
-    if summary["schema"] != _REPORT_SCHEMA:
-        raise ValueError("summary schema is unsupported")
-    core_score = _finite_number(summary["core_score"], "core_score", 0.0, 100.0)
+    keys = set(summary)
+    if (
+        keys != _LEGACY_SUMMARY_KEYS
+        and keys != _FULL_SUMMARY_KEYS
+        and keys != _FULL_SUMMARY_WITH_PROMOTION_KEYS
+    ):
+        raise ValueError("summary must use a closed report schema")
+    _finite_number(summary["core_score"], "core_score", 0.0, 100.0)
     samples = summary["samples"]
     if type(samples) is not list or len(samples) > _MAX_SAMPLES:
         raise ValueError("samples must be a bounded list")
+    full_contract = keys != _LEGACY_SUMMARY_KEYS
     normalized_samples: list[dict] = []
+    full_samples: list[dict] = []
     sample_ids = set()
     for index, sample in enumerate(samples):
         label = f"sample {index}"
-        if type(sample) is not dict or set(sample) != _SAMPLE_KEYS:
-            raise ValueError(f"{label} must use the canonical sample schema")
-        sample_id = _bounded_string(sample["sample_id"], f"{label} sample_id", _MAX_SAMPLE_ID_LENGTH)
-        if sample_id in sample_ids:
-            raise ValueError("sample_id values must be unique")
-        sample_ids.add(sample_id)
-        category = _bounded_string(sample["category"], f"{label} category", _MAX_CATEGORY_LENGTH)
-        score = _finite_number(sample["score"], f"{label} score", 0.0, 100.0)
-        count = sample["hard_failure_count"]
-        if type(count) is not int or not 0 <= count <= _MAX_HARD_FAILURE_COUNT:
-            raise ValueError(f"{label} hard_failure_count must be a bounded integer")
-        normalized_samples.append(
-            {
-                "sample_id": sample_id,
-                "category": category,
-                "score": score,
-                "hard_failure_count": count,
-                "comparison_link": _comparison_link(workspace, sample["comparison_png"]),
+        if type(sample) is not dict:
+            raise ValueError(f"{label} must be an object")
+        if full_contract:
+            row, aggregate_sample = _validated_full_sample(sample, label)
+            full_samples.append(aggregate_sample)
+        else:
+            if set(sample) != _LEGACY_SAMPLE_KEYS:
+                raise ValueError(f"{label} must use the canonical sample schema")
+            row = {
+                "sample_id": _bounded_string(
+                    sample["sample_id"], f"{label} sample_id", _MAX_SAMPLE_ID_LENGTH
+                ),
+                "category": _bounded_string(
+                    sample["category"], f"{label} category", _MAX_CATEGORY_LENGTH
+                ),
+                "score": _finite_number(sample["score"], f"{label} score", 0.0, 100.0),
+                "hard_failure_count": _bounded_counter(
+                    sample["hard_failure_count"], f"{label} hard_failure_count"
+                ),
+                "comparison_link": None,
             }
-        )
-    return {
-        "schema": _REPORT_SCHEMA,
-        "core_score": core_score,
-        "samples": samples,
-    }, normalized_samples
+        if row["sample_id"] in sample_ids:
+            raise ValueError("sample_id values must be unique")
+        sample_ids.add(row["sample_id"])
+        row["comparison_link"] = _comparison_link(workspace, sample["comparison_png"])
+        normalized_samples.append(row)
+    if full_contract:
+        _validated_aggregate(summary, full_samples)
+        if "promotion" in summary:
+            _validated_promotion(summary["promotion"])
+    return dict(summary), normalized_samples
 
 
 def _stage_text(directory: Path, content: str) -> Path:
