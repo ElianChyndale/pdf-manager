@@ -10,14 +10,17 @@ import stat
 import tempfile
 import uuid
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any
 
 import fitz
 
 from .prelabel import VISUAL_REVIEW_PROMPT_VERSION, VISUAL_REVIEW_SCHEMA
 from .report import _validated_summary, render_comparison, write_benchmark_report
-from .schema import GoldSample, validate_gold_sample
+from .schema import (
+    GoldSample,
+    validate_gold_sample,
+    validate_manifest_sample_fields,
+)
 from .scoring import promotion_decision, score_sample
 
 
@@ -65,23 +68,12 @@ _EVIDENCE_KEYS = {
     "preview_sha256",
     "locked_gold_sha256",
     "candidate_sha256",
+    "candidate_page",
     "regions_sha256",
     "placement_sha256",
     "subjective_sha256",
 }
 _ROTATIONS = {0, 90, 180, 270}
-_APPROVED_GOALS = frozenset(
-    "address association border_protection cell_wrap company company_information "
-    "dense_labels dense_vertical_labels detail dimensions elevation_labels elevations "
-    "equipment_ids equipment_terms graphics_text_mix identifiers image_text_mix "
-    "leader_avoidance leaders legend long_notes malay map materials multi_region "
-    "network_lines numbers product_note project_description repeated_equipment "
-    "repeated_terms right_information_column rotated_text semantic_block "
-    "system_relationships table table_rows tiny_text title_block units "
-    "vertical_boundaries voltage whitespace whitespace_layout".split()
-)
-
-
 def _is_reparse_point(path: Path) -> bool:
     try:
         return bool(
@@ -225,23 +217,15 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
             or len(record["category"]) > 256
         ):
             raise ValueError("manifest lock category is invalid")
-        relative_pdf = record.get("relative_pdf")
-        if (
-            type(relative_pdf) is not str
-            or not relative_pdf.strip()
-            or "\\" in relative_pdf
-            or ":" in relative_pdf
-            or relative_pdf.startswith("//")
-        ):
-            raise ValueError("manifest lock relative_pdf is invalid")
-        relative = PurePosixPath(relative_pdf)
-        if (
-            relative.is_absolute()
-            or relative.as_posix() != relative_pdf
-            or any(part in {"", ".", ".."} for part in relative.parts)
-            or relative.suffix.casefold() != ".pdf"
-        ):
-            raise ValueError("manifest lock relative_pdf is unsafe")
+        try:
+            validate_manifest_sample_fields(
+                relative_pdf=record.get("relative_pdf"),
+                page_number=record.get("page_number"),
+                goals=record.get("goals"),
+                set_name=record["set_name"],
+            )
+        except ValueError as error:
+            raise ValueError(f"manifest lock sample metadata: {error}") from error
         page_size = record.get("page_size")
         if (
             type(page_size) is not list
@@ -260,27 +244,8 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
             or record["page_rotation"] not in _ROTATIONS
         ):
             raise ValueError("manifest lock page_rotation is invalid")
-        goals = record.get("goals")
-        if (
-            type(goals) is not list
-            or not goals
-            or len(goals) > 64
-            or len(goals) != len(set(goals))
-            or any(
-                type(goal) is not str
-                or not goal.strip()
-                or goal != goal.strip()
-                or len(goal) > 128
-                for goal in goals
-            )
-            or any(goal not in _APPROVED_GOALS for goal in goals)
-        ):
-            raise ValueError("manifest lock goals are invalid")
         if (
             record.get("status") != "candidate"
-            or type(record.get("page_number")) is not int
-            or record["page_number"] < 1
-            or (record["set_name"] == "core" and record["page_number"] != 1)
             or type(record.get("dpi")) is not int
             or not 36 <= record["dpi"] <= 300
         ):
@@ -395,6 +360,47 @@ def validate_page_identity(
         raise ValueError(f"{label} page rotation does not match frozen source")
 
 
+def validate_candidate_pdf_identity(
+    candidate_pdf: Path,
+    source_pdf: Path,
+    record: dict[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    """Require one page with byte-independent but exact frozen page geometry."""
+    try:
+        with fitz.open(candidate_pdf) as candidate, fitz.open(source_pdf) as source:
+            if candidate.page_count != 1 or source.page_count != 1:
+                raise ValueError(f"{label} must contain exactly one page")
+            candidate_page = candidate[0]
+            source_page = source[0]
+            identity = {
+                "width": float(candidate_page.rect.width),
+                "height": float(candidate_page.rect.height),
+                "rotation": candidate_page.rotation,
+                "mediabox": [float(value) for value in candidate_page.mediabox],
+                "cropbox": [float(value) for value in candidate_page.cropbox],
+            }
+            source_mediabox = [
+                float(value) for value in source_page.mediabox
+            ]
+            source_cropbox = [float(value) for value in source_page.cropbox]
+    except (fitz.FileDataError, RuntimeError) as error:
+        raise ValueError(f"{label} must be a readable PDF") from error
+    if (
+        identity["width"] != float(record["page_size"][0])
+        or identity["height"] != float(record["page_size"][1])
+    ):
+        raise ValueError(f"{label} page dimensions do not match frozen source")
+    if identity["rotation"] != record["page_rotation"]:
+        raise ValueError(f"{label} page rotation does not match frozen source")
+    if identity["mediabox"] != source_mediabox:
+        raise ValueError(f"{label} mediabox does not match frozen source")
+    if identity["cropbox"] != source_cropbox:
+        raise ValueError(f"{label} cropbox does not match frozen source")
+    return identity
+
+
 def _pdf_diagnostics(candidate_pdf: Path, source_pdf: Path, placements: list[dict]) -> dict:
     try:
         with fitz.open(candidate_pdf) as document, fitz.open(source_pdf) as source:
@@ -457,8 +463,10 @@ def _visible_translation_text(
     page: fitz.Page,
     translated_text: str,
     target: tuple[float, float, float, float],
-) -> list[tuple[float, float, float, float]]:
-    visible_chars: list[tuple[str, tuple[float, float, float, float]]] = []
+) -> list[tuple[tuple[float, float, float, float], int]]:
+    visible_chars: list[
+        tuple[str, tuple[float, float, float, float], int]
+    ] = []
     for span in page.get_texttrace():
         color = span.get("color")
         white = (
@@ -486,23 +494,47 @@ def _visible_translation_text(
             if area <= 0 or _intersection_area(bbox, target) / area < 0.5:
                 continue
             try:
-                visible_chars.append((chr(codepoint), bbox))
+                visible_chars.append(
+                    (chr(codepoint), bbox, int(span.get("seqno", -1)))
+                )
             except (TypeError, ValueError):
                 continue
     expected = _fold_text(translated_text)
-    compact = _fold_text("".join(char for char, _bbox in visible_chars))
+    compact = _fold_text("".join(char for char, _bbox, _seqno in visible_chars))
     start = compact.find(expected)
     if start < 0:
         return []
     # Engineering translations are predominantly CJK and whitespace folding
     # does not change their character count.
-    return [bbox for _char, bbox in visible_chars[start : start + len(expected)]]
+    return [
+        (bbox, seqno)
+        for _char, bbox, seqno in visible_chars[start : start + len(expected)]
+    ]
+
+
+def _later_opaque_overpaint(
+    page: fitz.Page,
+    bbox: tuple[float, float, float, float],
+    text_seqno: int,
+) -> bool:
+    glyph_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+    for drawing in page.get_drawings():
+        if (
+            int(drawing.get("seqno", -1)) <= text_seqno
+            or drawing.get("fill") is None
+            or float(drawing.get("fill_opacity", 1.0)) < 0.99
+        ):
+            continue
+        drawing_rect = tuple(float(value) for value in drawing["rect"])
+        if _intersection_area(bbox, drawing_rect) >= glyph_area * 0.9:
+            return True
+    return False
 
 
 def _region_raster_signal(
     source_page: fitz.Page,
     candidate_page: fitz.Page,
-    glyph_bboxes: list[tuple[float, float, float, float]],
+    glyphs: list[tuple[tuple[float, float, float, float], int]],
 ) -> bool:
     matrix = fitz.Matrix(2, 2)
     source = source_page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csGRAY)
@@ -514,22 +546,38 @@ def _region_raster_signal(
     source_bytes = source.samples
     candidate_bytes = candidate.samples
     visible_glyphs = 0
-    for bbox in glyph_bboxes:
+    for bbox, text_seqno in glyphs:
+        if _later_opaque_overpaint(candidate_page, bbox, text_seqno):
+            continue
         x0 = max(0, min(source.width, math.floor(bbox[0] * 2)))
         y0 = max(0, min(source.height, math.floor(bbox[1] * 2)))
         x1 = max(0, min(source.width, math.ceil(bbox[2] * 2)))
         y1 = max(0, min(source.height, math.ceil(bbox[3] * 2)))
-        darker = 0
+        darker_points: list[tuple[int, int]] = []
         for y in range(y0, y1):
             row = y * source.stride
             for x in range(x0, x1):
                 offset = row + x
                 if candidate_bytes[offset] <= source_bytes[offset] - 12:
-                    darker += 1
-        if darker >= max(2, math.ceil((x1 - x0) * (y1 - y0) * 0.01)):
+                    darker_points.append((x, y))
+        width = max(1, x1 - x0)
+        height = max(1, y1 - y0)
+        if not darker_points:
+            continue
+        ink_width = max(x for x, _y in darker_points) - min(
+            x for x, _y in darker_points
+        ) + 1
+        ink_height = max(y for _x, y in darker_points) - min(
+            y for _x, y in darker_points
+        ) + 1
+        if (
+            len(darker_points) >= max(3, math.ceil(width * height * 0.015))
+            and ink_width >= math.ceil(width * 0.25)
+            and ink_height >= math.ceil(height * 0.25)
+        ):
             visible_glyphs += 1
-    return bool(glyph_bboxes) and visible_glyphs >= math.ceil(
-        len(glyph_bboxes) * 0.75
+    return bool(glyphs) and visible_glyphs >= math.ceil(
+        len(glyphs) * 0.75
     )
 
 
@@ -549,6 +597,41 @@ def _segment_hits_rect(
     return rect[1] <= start[1] <= rect[3] and max(
         min(start[0], end[0]), rect[0]
     ) <= min(max(start[0], end[0]), rect[2])
+
+
+_LEADER_ANCHOR_TOLERANCE = 0.05  # points; endpoint contact only, never traversal
+
+
+def _segment_only_touches_rect_at_anchor(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+    rect: tuple[float, ...],
+    anchor: tuple[float, float],
+) -> bool:
+    start, end = segment
+    if not (
+        math.dist(start, anchor) <= _LEADER_ANCHOR_TOLERANCE
+        or math.dist(end, anchor) <= _LEADER_ANCHOR_TOLERANCE
+    ):
+        return False
+    on_boundary = (
+        abs(anchor[0] - rect[0]) <= _LEADER_ANCHOR_TOLERANCE
+        or abs(anchor[0] - rect[2]) <= _LEADER_ANCHOR_TOLERANCE
+        or abs(anchor[1] - rect[1]) <= _LEADER_ANCHOR_TOLERANCE
+        or abs(anchor[1] - rect[3]) <= _LEADER_ANCHOR_TOLERANCE
+    )
+    if not on_boundary:
+        return False
+    if start[0] == end[0]:
+        if not rect[0] <= start[0] <= rect[2]:
+            return False
+        low = max(min(start[1], end[1]), rect[1])
+        high = min(max(start[1], end[1]), rect[3])
+        return high - low <= _LEADER_ANCHOR_TOLERANCE
+    if not rect[1] <= start[1] <= rect[3]:
+        return False
+    low = max(min(start[0], end[0]), rect[0])
+    high = min(max(start[0], end[0]), rect[2])
+    return high - low <= _LEADER_ANCHOR_TOLERANCE
 
 
 def _segments_cross(
@@ -659,6 +742,12 @@ def _bound_visual_evidence(
         "preview_sha256": sha256_file(source_png),
         "locked_gold_sha256": sha256_file(locked_gold_path),
         "candidate_sha256": sha256_file(candidate_pdf),
+        "candidate_page": validate_candidate_pdf_identity(
+            candidate_pdf,
+            source_pdf,
+            record,
+            label=f"{sample_id} evidence candidate page",
+        ),
         "regions_sha256": sha256_file(regions_path),
         "placement_sha256": sha256_file(placement_path),
         "subjective_sha256": sha256_file(subjective_path),
@@ -798,14 +887,26 @@ def _candidate_visual_qa(
         own_source = _rect_value(
             gold_by_id[region_id]["source_bbox"], "source_bbox"
         )
+        own_target = dict(target_rects)[region_id]
+        endpoint_anchors = (
+            [segments[0][0], segments[-1][1]] if segments else []
+        )
         for segment in segments:
-            for owner, obstacle, kind in obstacles:
-                if owner == region_id and (
-                    kind in {"source", "target"} or obstacle == own_source
+            for owner, obstacle, _kind in obstacles:
+                if not _segment_hits_rect(*segment, obstacle):
+                    continue
+                own_bbox = owner == region_id and (
+                    obstacle == own_source or obstacle == own_target
+                )
+                if own_bbox and any(
+                    _point_in_rect(anchor, obstacle)
+                    and _segment_only_touches_rect_at_anchor(
+                        segment, obstacle, anchor
+                    )
+                    for anchor in endpoint_anchors
                 ):
                     continue
-                if _segment_hits_rect(*segment, obstacle):
-                    leader_collision_ids.add(region_id)
+                leader_collision_ids.add(region_id)
     flattened = [
         (region_id, segment)
         for region_id, segments in leader_segments.items()
@@ -947,6 +1048,12 @@ def _preflight(workspace: Path, candidate_root: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{sample_id} locked gold must contain blocks")
 
         candidate_pdf = _child(candidate_root, f"{sample_id}.pdf", f"{sample_id} candidate PDF")
+        validate_candidate_pdf_identity(
+            candidate_pdf,
+            source_pdf,
+            record,
+            label=f"{sample_id} candidate page",
+        )
         regions_path = _child(
             candidate_root,
             f"{sample_id}.regions.json",

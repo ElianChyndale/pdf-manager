@@ -40,6 +40,8 @@ def _candidate_page(
     opacity: float = 1.0,
     color: tuple[float, float, float] = (0, 0, 0),
     overpaint: bool = False,
+    overpaint_with_glyph_dots: bool = False,
+    rotation: int = 0,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
@@ -55,20 +57,37 @@ def _candidate_page(
             fill_opacity=opacity,
             color=color,
         )
-        if overpaint:
+        traced_glyphs = [
+            fitz.Rect(raw[3])
+            for span in page.get_texttrace()
+            for raw in span.get("chars", ())
+            if len(raw) >= 4 and chr(raw[0]) in "屋面系统"
+        ]
+        if overpaint or overpaint_with_glyph_dots:
             page.draw_rect(
                 fitz.Rect(120, 10, 155, 35),
                 color=(1, 1, 1),
                 fill=(1, 1, 1),
                 overlay=True,
             )
-            page.draw_circle(
-                (205, 20),
-                2,
-                color=(0, 0, 0),
-                fill=(0, 0, 0),
-                overlay=True,
-            )
+            if overpaint_with_glyph_dots:
+                for glyph in traced_glyphs:
+                    page.draw_circle(
+                        ((glyph.x0 + glyph.x1) / 2, (glyph.y0 + glyph.y1) / 2),
+                        0.275,
+                        color=(0, 0, 0),
+                        fill=(0, 0, 0),
+                        overlay=True,
+                    )
+            else:
+                page.draw_circle(
+                    (205, 20),
+                    2,
+                    color=(0, 0, 0),
+                    fill=(0, 0, 0),
+                    overlay=True,
+                )
+    page.set_rotation(rotation)
     document.save(path)
     document.close()
 
@@ -221,6 +240,13 @@ def _seed_evaluation_tree(workspace: Path, candidate_root: Path) -> None:
             "candidate_sha256": hashlib.sha256(
                 (candidate_root / "core-03.pdf").read_bytes()
             ).hexdigest(),
+            "candidate_page": {
+                "width": 300.0,
+                "height": 200.0,
+                "rotation": 0,
+                "mediabox": [0.0, 0.0, 300.0, 200.0],
+                "cropbox": [0.0, 0.0, 300.0, 200.0],
+            },
             "regions_sha256": hashlib.sha256(
                 (candidate_root / "core-03.regions.json").read_bytes()
             ).hexdigest(),
@@ -308,6 +334,65 @@ def test_benchmark_seed_rejects_translated_delivery_directory(
                 ),
             ]
         )
+
+
+def test_benchmark_seed_cli_rejects_invalid_manifest_before_seed_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core = CoreManifest(
+        schema="engineering-drawing-core-set-v1",
+        benchmark_version="test-v1",
+        samples=(
+            CoreSample(
+                "core-03",
+                "roof_detail",
+                "roof.pdf",
+                1,
+                ("semantic_block",),
+            ),
+        ),
+    )
+    challenge_path = tmp_path / "challenge.json"
+    _write_json(
+        challenge_path,
+        {
+            "schema": "engineering-drawing-challenge-set-v1",
+            "benchmark_version": "challenge-v1",
+            "samples": [
+                {
+                    "sample_id": "challenge-01",
+                    "category": "detail",
+                    "relative_pdf": r"\\?\C:\escape.pdf",
+                    "page_number": 1,
+                    "goals": ["semantic_block"],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(engineering_cli, "load_core_manifest", lambda _path: core)
+    monkeypatch.setattr(
+        engineering_cli,
+        "seed_workspace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid manifest must be rejected before seed writes"
+        ),
+    )
+    workspace = tmp_path / "benchmark"
+
+    with pytest.raises(ValueError, match="relative_pdf"):
+        main(
+            [
+                "benchmark-seed",
+                "--source-root",
+                str(tmp_path / "source"),
+                "--workspace",
+                str(workspace),
+                "--challenge-manifest",
+                str(challenge_path),
+            ]
+        )
+
+    assert not workspace.exists()
 
 
 def test_model_backed_cli_rejects_sample_id_path_traversal(
@@ -582,6 +667,45 @@ def test_invisible_or_off_location_translation_is_a_hard_failure(
     assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
 
 
+def test_overpainted_translation_with_dot_in_every_glyph_bbox_is_hard_failure(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(candidate, overpaint_with_glyph_dots=True)
+    _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert result["core_score"] < 100
+    assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
+
+
+def test_evaluate_rejects_180_degree_candidate_identity_before_writes(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(candidate, rotation=180)
+    _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
+
+    with pytest.raises(ValueError, match="candidate page.*rotation"):
+        evaluate_workspace(workspace, candidate_root)
+
+    assert not (workspace / "comparisons").exists()
+    assert not (workspace / "reports").exists()
+
+
 def test_evaluate_rejects_stale_candidate_hash_before_writes(
     tmp_path: Path,
 ) -> None:
@@ -690,12 +814,31 @@ def test_clean_orthogonal_leader_route_passes(tmp_path: Path) -> None:
     _configure_drawn_leader(
         workspace,
         candidate_root,
-        [[100, 25], [100, 50], [130, 50], [130, 30]],
+        [[90, 35], [90, 50], [130, 50], [130, 30]],
     )
 
     result = evaluate_workspace(workspace, candidate_root)
 
     assert "leader_collision" not in result["samples"][0]["hard_failure_ids"]
+
+
+def test_leader_that_exits_and_reenters_own_target_is_collision(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    _configure_drawn_leader(
+        workspace,
+        candidate_root,
+        [[100, 25], [130, 25], [130, 50], [150, 50], [150, 20]],
+    )
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert "leader_collision" in result["samples"][0]["hard_failure_ids"]
 
 
 def test_malformed_diagonal_leader_path_is_rejected(tmp_path: Path) -> None:
@@ -1252,6 +1395,40 @@ def test_visual_review_requires_locked_gold_before_provider_access(
         )
 
 
+def test_visual_review_rejects_180_degree_candidate_before_provider_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    (candidate_root / "core-03.subjective.json").unlink()
+    (candidate_root / "core-03.evidence.json").unlink()
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(candidate, rotation=180)
+    monkeypatch.setattr(
+        engineering_cli,
+        "get_api_key",
+        lambda: pytest.fail("candidate identity must precede provider access"),
+    )
+
+    with pytest.raises(ValueError, match="candidate page.*rotation"):
+        main(
+            [
+                "benchmark-visual-review",
+                "--workspace",
+                str(workspace),
+                "--candidate-root",
+                str(candidate_root),
+                "--sample-id",
+                "core-03",
+            ]
+        )
+
+    assert not (candidate_root / "core-03.subjective.json").exists()
+    assert not (candidate_root / "core-03.evidence.json").exists()
+
+
 def test_visual_review_publishes_hash_bound_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1295,6 +1472,7 @@ def test_visual_review_publishes_hash_bound_pair(
     assert evidence["candidate_sha256"] == hashlib.sha256(
         (candidate_root / "core-03.pdf").read_bytes()
     ).hexdigest()
+    assert evidence["candidate_page"]["rotation"] == 0
     assert evidence["subjective_sha256"] == hashlib.sha256(
         subjective.read_bytes()
     ).hexdigest()

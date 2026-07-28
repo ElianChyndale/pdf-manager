@@ -26,7 +26,10 @@ from .benchmark.runner import canonical_digest
 from .benchmark.runner import evaluate_workspace
 from .benchmark.runner import sha256_file
 from .benchmark.runner import validated_sample_context
-from .benchmark.runner import validate_page_identity
+from .benchmark.runner import (
+    validate_candidate_pdf_identity,
+    validate_page_identity,
+)
 from .benchmark.schema import load_challenge_manifest, load_core_manifest
 from .benchmark.schema import GoldSample, validate_gold_sample
 from .benchmark.workspace import seed_workspace
@@ -388,6 +391,12 @@ def main(argv: list[str] | None = None) -> int:
             for path in (subjective_path, evidence_path)
         ):
             raise FileExistsError("benchmark visual-review outputs already exist")
+        candidate_page = validate_candidate_pdf_identity(
+            candidate_pdf,
+            context["source_pdf"],
+            context["record"],
+            label="visual-review candidate page",
+        )
         with fitz.open(candidate_pdf) as document:
             candidate_png = document[0].get_pixmap(
                 dpi=144, alpha=False
@@ -440,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             "preview_sha256": sha256_file(context["source_png"]),
             "locked_gold_sha256": sha256_file(locked_path),
             "candidate_sha256": sha256_file(candidate_pdf),
+            "candidate_page": candidate_page,
             "regions_sha256": sha256_file(regions_path),
             "placement_sha256": sha256_file(placement_path),
             "subjective_sha256": hashlib.sha256(subjective_bytes).hexdigest(),

@@ -85,14 +85,16 @@ Lifecycle:
    It atomically publishes a companion `*.evidence.json` containing SHA-256
    bindings for the benchmark version, canonical manifest record, frozen
    source and preview, locked gold, candidate PDF, regions, placement audit,
-   and review.
+   review, and exact one-page media/crop/rotation/dimension identity.
 6. `benchmark-evaluate` applies hard gates, weighted scoring, visual
    comparisons, and version-promotion rules. Evaluation rejects stale or
    structurally inconsistent evidence and transactionally replaces the report
    and comparison trees only after every sample is validated and rendered.
-   Visible-translation gates correlate final raster ink with each declared
-   Chinese glyph box, and leader gates test orthogonal paths against source
-   obstacles, forbidden zones, other captions, and other leaders.
+   Visible-translation gates correlate distributed final-raster ink with each
+   declared Chinese glyph box and reject later opaque overpaint by PDF drawing
+   order. Leader gates allow only 0.05-point endpoint contact with the leader's
+   own source/target boxes, then test the full route against source obstacles,
+   forbidden zones, other captions, and other leaders.
    A generated `benchmark-report.json` can be supplied as the next
    `--baseline-report`; promotion is accepted only when its manifest digest and
    complete sample/set/category/challenge universe match.
@@ -109,5 +111,7 @@ Model-backed prelabel and visual-review commands must only be run with approved
 model budget. Lifecycle commands refuse to overwrite prelabels, visual reviews,
 or gold artifacts; adjudication remains append-only by requiring a fresh
 workspace state. Every lifecycle transition also requires exact frozen-page
-size and rotation identity. Never run `batch-translate` as part of benchmark construction,
-annotation, or evaluation.
+media box, crop box, size, and rotation identity. Seed inputs use the same
+closed cross-platform path, page, and goal validator as later evaluation.
+Never run `batch-translate` as part of benchmark construction, annotation, or
+evaluation.

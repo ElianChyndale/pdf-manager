@@ -6,7 +6,11 @@ from pathlib import Path
 
 import fitz
 
-from .schema import CoreManifest, CoreSample
+from .schema import (
+    CoreManifest,
+    CoreSample,
+    validate_manifest_sample_fields,
+)
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -44,14 +48,16 @@ def _preflight(
     target_paths = [workspace / "manifest.lock.json"]
     for set_name, selected_manifest in manifest_sets:
         for spec in selected_manifest.samples:
+            validate_manifest_sample_fields(
+                relative_pdf=spec.relative_pdf,
+                page_number=spec.page_number,
+                goals=spec.goals,
+                set_name=set_name,
+            )
             if spec.sample_id in sample_ids:
                 raise ValueError(f"duplicate sample_id across manifests: {spec.sample_id}")
             sample_ids.add(spec.sample_id)
             sample_dir = _sample_dir(samples_root, spec.sample_id)
-            if spec.page_number < 1:
-                raise ValueError("page_number must be at least 1")
-            if set_name == "core" and spec.page_number != 1:
-                raise ValueError("core samples must use page 1")
             source = (source_root / spec.relative_pdf).resolve()
             if source_root not in source.parents or not source.is_file():
                 raise FileNotFoundError(f"core source is missing or outside root: {source}")

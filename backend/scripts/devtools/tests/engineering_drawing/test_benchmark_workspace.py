@@ -113,6 +113,36 @@ def test_seed_workspace_rejects_traversal_sample_id_without_external_write(tmp_p
     assert not (tmp_path / "benchmark").exists()
 
 
+@pytest.mark.parametrize(
+    ("relative_pdf", "goals"),
+    [
+        ("../escape.pdf", ("semantic_block",)),
+        ("C:/escape.pdf", ("semantic_block",)),
+        (r"C:\escape.pdf", ("semantic_block",)),
+        (r"\\server\share\escape.pdf", ("semantic_block",)),
+        (r"\\?\C:\escape.pdf", ("semantic_block",)),
+        (r"\\.\NUL.pdf", ("semantic_block",)),
+        ("one.pdf", ("semantic_block", "semantic_block")),
+        ("one.pdf", ("unknown_goal",)),
+    ],
+)
+def test_seed_workspace_rejects_invalid_manifest_before_any_write(
+    tmp_path: Path, relative_pdf: str, goals: tuple[str, ...]
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _write_pdf(source_root / "one.pdf")
+    workspace = tmp_path / "benchmark"
+
+    with pytest.raises(ValueError):
+        sample = CoreSample("core-03", "roof_detail", relative_pdf, 1, goals)
+        seed_workspace(source_root, workspace, _manifest(sample))
+
+    assert not workspace.exists()
+    assert not list(tmp_path.rglob("*.tmp"))
+    assert not list(tmp_path.rglob("manifest.lock.json"))
+
+
 def test_seed_workspace_rejects_cross_set_duplicate_ids_before_writing(tmp_path: Path):
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -127,20 +157,21 @@ def test_seed_workspace_rejects_cross_set_duplicate_ids_before_writing(tmp_path:
 
 
 @pytest.mark.parametrize(
-    ("manifest", "match"),
+    ("page_number", "match"),
     [
-        (_manifest(_sample(page_number=0)), "page_number must be at least 1"),
-        (_manifest(_sample(page_number=2)), "core samples must use page 1"),
+        (0, "page_number must be at least 1"),
+        (2, "core samples must use page 1"),
     ],
 )
 def test_seed_workspace_rejects_invalid_requested_pages_before_writing(
-    tmp_path: Path, manifest: CoreManifest, match: str
+    tmp_path: Path, page_number: int, match: str
 ):
     source_root = tmp_path / "source"
     source_root.mkdir()
     _write_pdf(source_root / "one.pdf", page_count=2)
 
     with pytest.raises(ValueError, match=match):
+        manifest = _manifest(_sample(page_number=page_number))
         seed_workspace(source_root, tmp_path / "benchmark", manifest)
 
     assert not (tmp_path / "benchmark").exists()

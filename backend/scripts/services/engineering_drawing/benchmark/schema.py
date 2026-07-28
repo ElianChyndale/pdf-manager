@@ -4,11 +4,68 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any, Mapping
 
 
 Rect = tuple[float, float, float, float]
+APPROVED_GOALS = frozenset(
+    "address association border_protection cell_wrap company company_information "
+    "dense_labels dense_vertical_labels detail dimensions elevation_labels elevations "
+    "equipment_ids equipment_terms graphics_text_mix identifiers image_text_mix "
+    "leader_avoidance leaders legend long_notes malay map materials multi_region "
+    "network_lines numbers product_note project_description repeated_equipment "
+    "repeated_terms right_information_column rotated_text semantic_block "
+    "system_relationships table table_rows tiny_text title_block units "
+    "vertical_boundaries voltage whitespace whitespace_layout".split()
+)
+
+
+def validate_manifest_sample_fields(
+    *,
+    relative_pdf: object,
+    page_number: object,
+    goals: object,
+    set_name: str | None = None,
+) -> None:
+    """Validate portable manifest fields before they can reach filesystem code."""
+    if (
+        type(relative_pdf) is not str
+        or not relative_pdf
+        or relative_pdf != relative_pdf.strip()
+        or "\\" in relative_pdf
+        or ":" in relative_pdf
+        or "//" in relative_pdf
+    ):
+        raise ValueError("relative_pdf must be a safe portable POSIX PDF path")
+    relative = PurePosixPath(relative_pdf)
+    if (
+        relative.is_absolute()
+        or relative.as_posix() != relative_pdf
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.suffix.casefold() != ".pdf"
+    ):
+        raise ValueError("relative_pdf must be a safe portable POSIX PDF path")
+    if type(page_number) is not int or page_number < 1:
+        raise ValueError("page_number must be at least 1")
+    if set_name == "core" and page_number != 1:
+        raise ValueError("core samples must use page 1")
+    if (
+        not isinstance(goals, (list, tuple))
+        or not goals
+        or len(goals) > 64
+        or len(goals) != len(set(goals))
+        or any(
+            type(goal) is not str
+            or not goal
+            or goal != goal.strip()
+            or len(goal) > 128
+            or goal not in APPROVED_GOALS
+            for goal in goals
+        )
+    ):
+        raise ValueError("goals must be unique approved benchmark goals")
 
 
 def _rect(value: object, field_name: str) -> Rect:
@@ -59,6 +116,14 @@ class CoreSample:
     page_number: int
     goals: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "goals", tuple(self.goals))
+        validate_manifest_sample_fields(
+            relative_pdf=self.relative_pdf,
+            page_number=self.page_number,
+            goals=self.goals,
+        )
+
 
 @dataclass(frozen=True)
 class CoreManifest:
@@ -66,6 +131,26 @@ class CoreManifest:
     benchmark_version: str
     samples: tuple[CoreSample, ...]
     set_name: str = "core"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "samples", tuple(self.samples))
+        if self.set_name not in {"core", "challenge"}:
+            raise ValueError("manifest set_name must be core or challenge")
+        for sample in self.samples:
+            if not isinstance(sample, CoreSample):
+                raise ValueError("manifest samples must be CoreSample values")
+            validate_manifest_sample_fields(
+                relative_pdf=sample.relative_pdf,
+                page_number=sample.page_number,
+                goals=sample.goals,
+                set_name=self.set_name,
+            )
+        if len({sample.sample_id for sample in self.samples}) != len(self.samples):
+            raise ValueError("manifest sample IDs must be unique")
+        if len({sample.relative_pdf.casefold() for sample in self.samples}) != len(
+            self.samples
+        ):
+            raise ValueError("manifest PDF paths must be unique case-insensitively")
 
 
 @dataclass(frozen=True)

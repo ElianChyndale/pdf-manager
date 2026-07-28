@@ -5,6 +5,8 @@ import math
 import pytest
 
 from services.engineering_drawing.benchmark.schema import (
+    CoreManifest,
+    CoreSample,
     GoldBlock,
     GoldSample,
     load_challenge_manifest,
@@ -81,6 +83,62 @@ def test_challenge_manifest_starts_empty_and_versioned():
     assert manifest.set_name == "challenge"
     assert manifest.benchmark_version == "challenge-v1"
     assert manifest.samples == ()
+
+
+@pytest.mark.parametrize(
+    ("relative_pdf", "goals"),
+    [
+        ("../escape.pdf", ("semantic_block",)),
+        ("C:/escape.pdf", ("semantic_block",)),
+        (r"C:\escape.pdf", ("semantic_block",)),
+        (r"\\server\share\escape.pdf", ("semantic_block",)),
+        (r"\\?\C:\escape.pdf", ("semantic_block",)),
+        (r"\\.\NUL.pdf", ("semantic_block",)),
+        ("safe//escape.pdf", ("semantic_block",)),
+        ("one.pdf", ("semantic_block", "semantic_block")),
+        ("one.pdf", ("unknown_goal",)),
+    ],
+)
+def test_direct_core_sample_rejects_unsafe_path_or_goals(
+    relative_pdf: str, goals: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError):
+        CoreSample("core-01", "detail", relative_pdf, 1, goals)
+
+
+def test_direct_core_manifest_rejects_non_page_one_core_sample() -> None:
+    sample = CoreSample(
+        "core-01", "detail", "one.pdf", 2, ("semantic_block",)
+    )
+
+    with pytest.raises(ValueError, match="page 1"):
+        CoreManifest(
+            schema="engineering-drawing-core-set-v1",
+            benchmark_version="core-v1",
+            samples=(sample,),
+        )
+
+
+def test_challenge_manifest_loader_rejects_unsafe_sample_before_return(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "schema": "engineering-drawing-challenge-set-v1",
+        "benchmark_version": "challenge-v1",
+        "samples": [
+            {
+                "sample_id": "challenge-01",
+                "category": "detail",
+                "relative_pdf": r"\\?\C:\escape.pdf",
+                "page_number": 1,
+                "goals": ["semantic_block"],
+            }
+        ],
+    }
+    path = _write_payload(tmp_path, "challenge.json", payload)
+
+    with pytest.raises(ValueError, match="relative_pdf"):
+        load_challenge_manifest(path)
 
 
 def test_gold_sample_rejects_target_inside_forbidden_zone():
