@@ -82,8 +82,12 @@ Lifecycle:
 4. `benchmark-adjudicate --lock` creates an audited `gold.locked.json`.
 5. `benchmark-visual-review` records the Sol model, prompt version, page-layout
    score, readability score, and auditable findings for each candidate page.
+   It atomically publishes a companion `*.evidence.json` containing SHA-256
+   bindings for the candidate PDF, regions, placement audit, and review.
 6. `benchmark-evaluate` applies hard gates, weighted scoring, visual
-   comparisons, and version-promotion rules.
+   comparisons, and version-promotion rules. Evaluation rejects stale or
+   structurally inconsistent evidence and transactionally replaces the report
+   and comparison trees only after every sample is validated and rendered.
 
 The seed command creates only frozen benchmark inputs:
 
@@ -94,5 +98,7 @@ python -m services.engineering_drawing benchmark-seed `
 ```
 
 Model-backed prelabel and visual-review commands must only be run with approved
-model budget. Never run `batch-translate` as part of benchmark construction,
+model budget. Lifecycle commands refuse to overwrite prelabels, visual reviews,
+or gold artifacts; adjudication remains append-only by requiring a fresh
+workspace state. Never run `batch-translate` as part of benchmark construction,
 annotation, or evaluation.

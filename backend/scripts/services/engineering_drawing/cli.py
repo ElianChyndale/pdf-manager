@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,8 +20,12 @@ from .benchmark.prelabel import (
     request_visual_review,
     select_adjudication_queue,
 )
+from .benchmark.runner import _candidate_visual_qa
 from .benchmark.runner import evaluate_workspace
+from .benchmark.runner import sha256_file
+from .benchmark.runner import validated_sample_context
 from .benchmark.schema import load_challenge_manifest, load_core_manifest
+from .benchmark.schema import GoldSample, validate_gold_sample
 from .benchmark.workspace import seed_workspace
 from .inventory import build_inventory
 from .legacy_audit import audit_inventory
@@ -69,6 +76,50 @@ def _benchmark_candidate_file(
     if root not in resolved.parents or target.is_symlink() or not resolved.is_file():
         raise ValueError("benchmark candidate file must stay inside candidate root")
     return resolved
+
+
+def _json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _publish_json_exclusive(items: list[tuple[Path, object]]) -> None:
+    staged: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        for target, value in items:
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(
+                    f"benchmark artifact already exists: {target.name}"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{target.name}-", suffix=".tmp", dir=target.parent
+            )
+            temporary = Path(temporary_name)
+            staged.append((temporary, target))
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(_json_bytes(value))
+                handle.flush()
+                os.fsync(handle.fileno())
+        for temporary, target in staged:
+            os.link(temporary, target)
+            temporary.unlink()
+            published.append(target)
+    except BaseException:
+        for target in published:
+            target.unlink(missing_ok=True)
+        raise
+    finally:
+        for temporary, _target in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -162,16 +213,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "benchmark-prelabel":
         import base64
 
-        sample_dir = _benchmark_sample_dir(args.workspace, args.sample_id)
+        context = validated_sample_context(args.workspace, args.sample_id)
+        sample_dir = context["sample_dir"]
+        prelabel_path = sample_dir / "prelabel.json"
+        queue_path = sample_dir / "adjudication-queue.json"
+        if list(sample_dir.glob("gold.*.json")):
+            raise FileExistsError("benchmark prelabel cannot follow a gold artifact")
+        if any(path.exists() or path.is_symlink() for path in (prelabel_path, queue_path)):
+            raise FileExistsError("benchmark prelabel outputs already exist")
+        if args.regions_json.is_symlink() or not args.regions_json.is_file():
+            raise ValueError("benchmark regions must be a regular JSON file")
         image_data_url = "data:image/png;base64," + base64.b64encode(
-            (sample_dir / "source.png").read_bytes()
+            context["source_png"].read_bytes()
         ).decode("ascii")
         regions = json.loads(args.regions_json.read_text(encoding="utf-8"))[
             "regions"
         ]
-        sample_record = json.loads(
-            (sample_dir / "sample.json").read_text(encoding="utf-8")
-        )
+        sample_record = context["record"]
         result = request_prelabels(
             sample_id=args.sample_id,
             image_data_url=image_data_url,
@@ -186,21 +244,21 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             request_fn=request_chat_content,
         )
-        (sample_dir / "prelabel.json").write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (sample_dir / "adjudication-queue.json").write_text(
-            json.dumps(
-                {"items": select_adjudication_queue(result)},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        _publish_json_exclusive(
+            [
+                (prelabel_path, result),
+                (
+                    queue_path,
+                    {"items": select_adjudication_queue(result)},
+                ),
+            ]
         )
         return 0
     if args.command == "benchmark-adjudicate":
-        sample_dir = _benchmark_sample_dir(args.workspace, args.sample_id)
+        context = validated_sample_context(args.workspace, args.sample_id)
+        sample_dir = context["sample_dir"]
+        if list(sample_dir.glob("gold.*.json")):
+            raise FileExistsError("benchmark gold artifact already exists")
         prelabel = json.loads(
             (sample_dir / "prelabel.json").read_text(encoding="utf-8")
         )
@@ -217,22 +275,41 @@ def main(argv: list[str] | None = None) -> int:
             if gold.status == "locked"
             else "gold.adjudicated.json"
         )
-        (sample_dir / output_name).write_text(
-            json.dumps(gold.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _publish_json_exclusive([(sample_dir / output_name, gold.to_dict())])
         return 0
     if args.command == "benchmark-visual-review":
         import base64
         import fitz
 
-        sample_dir = _benchmark_sample_dir(args.workspace, args.sample_id)
+        context = validated_sample_context(args.workspace, args.sample_id)
+        sample_dir = context["sample_dir"]
+        locked_path = sample_dir / "gold.locked.json"
+        if locked_path.is_symlink() or not locked_path.is_file():
+            raise ValueError("benchmark visual review requires locked gold")
+        try:
+            locked_gold = GoldSample.from_dict(
+                json.loads(locked_path.read_text(encoding="utf-8"))
+            )
+            validate_gold_sample(locked_gold)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("benchmark locked gold is invalid") from error
+        if locked_gold.sample_id != args.sample_id or locked_gold.status != "locked":
+            raise ValueError("benchmark visual review requires matching locked gold")
         source_url = "data:image/png;base64," + base64.b64encode(
-            (sample_dir / "source.png").read_bytes()
+            context["source_png"].read_bytes()
         ).decode("ascii")
         candidate_pdf = _benchmark_candidate_file(
             args.candidate_root, args.sample_id, ".pdf"
         )
+        subjective_path = (
+            candidate_pdf.parent / f"{args.sample_id}.subjective.json"
+        )
+        evidence_path = candidate_pdf.parent / f"{args.sample_id}.evidence.json"
+        if any(
+            path.exists() or path.is_symlink()
+            for path in (subjective_path, evidence_path)
+        ):
+            raise FileExistsError("benchmark visual-review outputs already exist")
         with fitz.open(candidate_pdf) as document:
             candidate_png = document[0].get_pixmap(
                 dpi=144, alpha=False
@@ -240,11 +317,27 @@ def main(argv: list[str] | None = None) -> int:
         candidate_url = "data:image/png;base64," + base64.b64encode(
             candidate_png
         ).decode("ascii")
+        regions_path = _benchmark_candidate_file(
+            args.candidate_root, args.sample_id, ".regions.json"
+        )
+        placement_path = _benchmark_candidate_file(
+            args.candidate_root,
+            args.sample_id,
+            ".inline-placement.json",
+        )
         candidate_regions = json.loads(
-            _benchmark_candidate_file(
-                args.candidate_root, args.sample_id, ".regions.json"
-            ).read_text(encoding="utf-8")
+            regions_path.read_text(encoding="utf-8")
         )["regions"]
+        placements = json.loads(
+            placement_path.read_text(encoding="utf-8")
+        )["placements"]
+        _candidate_visual_qa(
+            candidate_pdf=candidate_pdf,
+            source_pdf=context["source_pdf"],
+            gold_blocks=locked_gold.to_dict()["blocks"],
+            candidate_regions=candidate_regions,
+            placements=placements,
+        )
         candidate_region_ids = [
             str(item.get("block_id") or item.get("region_id"))
             for item in candidate_regions
@@ -259,9 +352,20 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             request_fn=request_chat_content,
         )
-        (candidate_pdf.parent / f"{args.sample_id}.subjective.json").write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        subjective_bytes = _json_bytes(result)
+        evidence = {
+            "schema": "engineering-drawing-candidate-evidence-v1",
+            "sample_id": args.sample_id,
+            "candidate_sha256": sha256_file(candidate_pdf),
+            "regions_sha256": sha256_file(regions_path),
+            "placement_sha256": sha256_file(placement_path),
+            "subjective_sha256": hashlib.sha256(subjective_bytes).hexdigest(),
+        }
+        _publish_json_exclusive(
+            [
+                (subjective_path, result),
+                (evidence_path, evidence),
+            ]
         )
         return 0
     if args.command == "benchmark-evaluate":
