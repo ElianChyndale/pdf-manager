@@ -514,12 +514,18 @@ def _visible_translation_text(
     ]
 
 
-def _later_opaque_overpaint(
+def _later_opaque_coverage(
     page: fitz.Page,
     bbox: tuple[float, float, float, float],
     text_seqno: int,
-) -> bool:
-    glyph_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+) -> float:
+    """Measure the union of later paint coverage, including tiled objects.
+
+    A single-object intersection test is insufficient because a white image or
+    path can be split into several tiles. Sampling the union on a fixed grid is
+    deterministic and deliberately conservative for a hard visibility gate.
+    """
+    later_boxes: list[tuple[float, float, float, float]] = []
     for seqno, item in enumerate(page.get_bboxlog()):
         if seqno <= text_seqno or len(item) < 2:
             continue
@@ -533,9 +539,12 @@ def _later_opaque_overpaint(
             "stroke-text",
         }:
             continue
-        paint_bbox = tuple(float(value) for value in item[1])
-        if _intersection_area(bbox, paint_bbox) >= glyph_area * 0.9:
-            return True
+        try:
+            paint_bbox = tuple(float(value) for value in item[1])
+        except (TypeError, ValueError):
+            continue
+        if len(paint_bbox) == 4 and _intersection_area(bbox, paint_bbox) > 0:
+            later_boxes.append(paint_bbox)
     for drawing in page.get_drawings():
         if (
             int(drawing.get("seqno", -1)) <= text_seqno
@@ -543,10 +552,35 @@ def _later_opaque_overpaint(
             or float(drawing.get("fill_opacity", 1.0)) < 0.99
         ):
             continue
-        drawing_rect = tuple(float(value) for value in drawing["rect"])
-        if _intersection_area(bbox, drawing_rect) >= glyph_area * 0.9:
-            return True
-    return False
+        try:
+            drawing_rect = tuple(float(value) for value in drawing["rect"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(drawing_rect) == 4 and _intersection_area(bbox, drawing_rect) > 0:
+            later_boxes.append(drawing_rect)
+
+    if not later_boxes:
+        return 0.0
+    covered = 0
+    grid_size = 16
+    for row in range(grid_size):
+        y = bbox[1] + (row + 0.5) * (bbox[3] - bbox[1]) / grid_size
+        for column in range(grid_size):
+            x = bbox[0] + (column + 0.5) * (bbox[2] - bbox[0]) / grid_size
+            if any(
+                paint[0] <= x <= paint[2] and paint[1] <= y <= paint[3]
+                for paint in later_boxes
+            ):
+                covered += 1
+    return covered / (grid_size * grid_size)
+
+
+def _later_opaque_overpaint(
+    page: fitz.Page,
+    bbox: tuple[float, float, float, float],
+    text_seqno: int,
+) -> bool:
+    return _later_opaque_coverage(page, bbox, text_seqno) >= 0.5
 
 
 def _region_raster_signal(

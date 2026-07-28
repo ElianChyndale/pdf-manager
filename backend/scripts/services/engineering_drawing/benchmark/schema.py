@@ -25,6 +25,13 @@ MANIFEST_FIELDS = frozenset({"schema", "benchmark_version", "samples"})
 MANIFEST_SAMPLE_FIELDS = frozenset(
     {"sample_id", "category", "relative_pdf", "page_number", "goals"}
 )
+_MANIFEST_SCHEMAS = {
+    "core": "engineering-drawing-core-set-v1",
+    "challenge": "engineering-drawing-challenge-set-v1",
+}
+_MANIFEST_VERSION = re.compile(
+    r"(?:(?:core|challenge)(?:-test)?|test)-v[0-9]+"
+)
 
 
 def validate_manifest_sample_fields(
@@ -139,7 +146,8 @@ class CoreSample:
     goals: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "goals", tuple(self.goals))
+        if type(self.goals) is not tuple:
+            raise ValueError("goals must be an immutable tuple when constructing a manifest")
         validate_manifest_sample_fields(
             sample_id=self.sample_id,
             category=self.category,
@@ -157,13 +165,17 @@ class CoreManifest:
     set_name: str = "core"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "samples", tuple(self.samples))
         if self.set_name not in {"core", "challenge"}:
             raise ValueError("manifest set_name must be core or challenge")
-        if type(self.schema) is not str or not self.schema:
-            raise ValueError("manifest schema must be a nonempty string")
-        if type(self.benchmark_version) is not str or not self.benchmark_version:
-            raise ValueError("manifest benchmark_version must be a nonempty string")
+        if type(self.samples) is not tuple:
+            raise ValueError("manifest samples must be an immutable tuple")
+        if self.schema != _MANIFEST_SCHEMAS[self.set_name]:
+            raise ValueError("manifest schema does not match its set")
+        if (
+            type(self.benchmark_version) is not str
+            or _MANIFEST_VERSION.fullmatch(self.benchmark_version) is None
+        ):
+            raise ValueError("manifest benchmark_version must use the approved version format")
         for sample in self.samples:
             if not isinstance(sample, CoreSample):
                 raise ValueError("manifest samples must be CoreSample values")

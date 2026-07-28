@@ -42,6 +42,8 @@ def _candidate_page(
     overpaint: bool = False,
     overpaint_with_glyph_dots: bool = False,
     overpaint_with_white_image_and_glyph_dots: bool = False,
+    tiled_overpaint_with_glyph_dots: bool = False,
+    tiled_vector_overpaint_with_glyph_dots: bool = False,
     rotation: int = 0,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,15 +70,30 @@ def _candidate_page(
             overpaint
             or overpaint_with_glyph_dots
             or overpaint_with_white_image_and_glyph_dots
+            or tiled_overpaint_with_glyph_dots
+            or tiled_vector_overpaint_with_glyph_dots
         ):
-            if overpaint_with_white_image_and_glyph_dots:
+            if overpaint_with_white_image_and_glyph_dots or tiled_overpaint_with_glyph_dots:
                 white = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 140, 100), 0)
                 white.clear_with(255)
-                page.insert_image(
-                    fitz.Rect(120, 10, 155, 35),
-                    pixmap=white,
-                    overlay=True,
-                )
+                if tiled_overpaint_with_glyph_dots:
+                    for rect in (
+                        fitz.Rect(120, 10, 137.5, 22.5),
+                        fitz.Rect(137.5, 10, 155, 22.5),
+                        fitz.Rect(120, 22.5, 137.5, 35),
+                        fitz.Rect(137.5, 22.5, 155, 35),
+                    ):
+                        page.insert_image(rect, pixmap=white, overlay=True)
+                else:
+                    page.insert_image(fitz.Rect(120, 10, 155, 35), pixmap=white, overlay=True)
+            elif tiled_vector_overpaint_with_glyph_dots:
+                for rect in (
+                    fitz.Rect(120, 10, 137.5, 22.5),
+                    fitz.Rect(137.5, 10, 155, 22.5),
+                    fitz.Rect(120, 22.5, 137.5, 35),
+                    fitz.Rect(137.5, 22.5, 155, 35),
+                ):
+                    page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
             else:
                 page.draw_rect(
                     fitz.Rect(120, 10, 155, 35),
@@ -93,7 +110,7 @@ def _candidate_page(
                         fill=(0, 0, 0),
                         overlay=True,
                     )
-            elif overpaint_with_white_image_and_glyph_dots:
+            elif overpaint_with_white_image_and_glyph_dots or tiled_overpaint_with_glyph_dots or tiled_vector_overpaint_with_glyph_dots:
                 for glyph in traced_glyphs:
                     for x_fraction, y_fraction in (
                         (0.2, 0.25),
@@ -731,6 +748,32 @@ def test_white_image_overpaint_with_sparse_glyph_dots_is_hard_failure(
         candidate,
         overpaint_with_white_image_and_glyph_dots=True,
     )
+    _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert result["core_score"] < 100
+    assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
+
+
+@pytest.mark.parametrize(
+    "candidate_options",
+    [
+        {"tiled_overpaint_with_glyph_dots": True},
+        {"tiled_vector_overpaint_with_glyph_dots": True},
+    ],
+)
+def test_tiled_overpaint_cannot_be_recombined_into_a_false_visible_translation(
+    tmp_path: Path, candidate_options: dict
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(candidate, **candidate_options)
     _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
 
     result = evaluate_workspace(workspace, candidate_root)

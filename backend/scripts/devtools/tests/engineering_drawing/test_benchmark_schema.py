@@ -119,6 +119,27 @@ def test_direct_core_manifest_rejects_non_page_one_core_sample() -> None:
         )
 
 
+def test_direct_manifest_constructors_reject_coercive_inputs_and_arbitrary_identity() -> None:
+    with pytest.raises(ValueError, match="immutable tuple"):
+        CoreSample("core-01", "detail", "one.pdf", 1, ["semantic_block"])
+
+    sample = CoreSample(
+        "core-01", "detail", "one.pdf", 1, ("semantic_block",)
+    )
+    with pytest.raises(ValueError, match="immutable tuple"):
+        CoreManifest(
+            schema="engineering-drawing-core-set-v1",
+            benchmark_version="core-v1",
+            samples=[sample],
+        )
+    with pytest.raises(ValueError, match="approved version"):
+        CoreManifest(
+            schema="engineering-drawing-core-set-v1",
+            benchmark_version="arbitrary-version",
+            samples=(sample,),
+        )
+
+
 def test_challenge_manifest_loader_rejects_unsafe_sample_before_return(
     tmp_path: Path,
 ) -> None:
