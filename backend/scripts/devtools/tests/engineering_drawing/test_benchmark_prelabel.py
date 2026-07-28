@@ -125,13 +125,27 @@ def test_prelabel_requires_an_exact_sample_block_id(block_id):
 
 @pytest.mark.parametrize(
     "source_text",
-    ["0.48MM BMT KL98", "KL98 BMT"],
+    ["0.48MM BMT KL98", "KL98 BMT", "NOTE KL98 0.48MM BMT", "KL98 EXTRA 0.48MM BMT", "KL98 0.48MM BMT NOTE"],
 )
 def test_prelabel_reconciles_member_source_text_without_reordering_or_omission(source_text):
     block = _block()
     block["source_text"] = source_text
 
     with pytest.raises(ValueError, match="source_text"):
+        _parse(_content(block))
+
+
+@pytest.mark.parametrize("block_id", ["core-03-b٠٠١", "core-03-b００１"])
+def test_prelabel_rejects_non_ascii_decimal_digits_in_block_ids(block_id):
+    with pytest.raises(ValueError, match="block_id"):
+        _parse(_content(_block(block_id)))
+
+
+def test_prelabel_rejects_undeclared_leader_fields():
+    block = _block()
+    block["leader"]["unexpected"] = True
+
+    with pytest.raises(ValueError, match="undeclared"):
         _parse(_content(block))
 
 
@@ -161,6 +175,13 @@ def test_prelabel_derives_complete_engineering_literal_runs():
         "600×300mm",
         "45%",
         "AHU/01-2",
+    ]
+
+
+def test_prelabel_derives_compound_thread_and_scale_literals_without_prose():
+    assert derive_engineering_literals("M20×2.5 thread at scale 1:100") == [
+        "M20×2.5",
+        "1:100",
     ]
 
 

@@ -52,22 +52,21 @@ _REQUIRED_BLOCK_FIELDS = {
 }
 _LEADER_FIELDS = {"allowed", "required", "color", "width_points", "route", "arrow"}
 _FINDING_FIELDS = {"code", "region_id", "reason"}
-_LITERAL_PATTERN = re.compile(
-    r"""
-    (?<![A-Za-z0-9])
-    (?:
-        (?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*(?:[x×/]\s*(?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*)+
-        (?:%|[A-Za-zµμ°][A-Za-z0-9²³µμ°%./-]{0,11}(?:\s+[A-Z][A-Z0-9²³µμ°%./-]{0,11})*)?
-        |
-        (?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*(?:%|[A-Za-zµμ°][A-Za-z0-9²³µμ°%./-]{0,11}(?:\s+[A-Z][A-Z0-9²³µμ°%./-]{0,11})*)?
-        |
-        [A-Za-z][A-Za-z0-9._/+:\-]*\d[A-Za-z0-9._/+:\-]*
-        |
-        (?:ID|NO|REF|TYPE|MODEL)\s*[-:\#]?\s*[A-Z0-9][A-Z0-9._/+:\-]*
-    )
-    (?![A-Za-z0-9])
-    """,
-    re.VERBOSE,
+_LITERAL_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9])[+-]?\d+(?:[.,]\d+)?\s*:\s*[+-]?\d+(?:[.,]\d+)?(?![A-Za-z0-9])"),
+    re.compile(
+        r"(?<![A-Za-z0-9])(?:[A-Za-z]{1,8}\d+(?:[x×]\d+(?:[.,]\d+)?)+|"
+        r"(?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*(?:[x×/]\s*(?:[Øø⌀]\s*)?"
+        r"[+-]?\d+(?:[.,]\d+)?\s*)+(?:%|[A-Za-zµμ°][A-Za-z0-9²³µμ°%./-]{0,11})?)(?![A-Za-z0-9])"
+    ),
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9._/+:\-]*\d[A-Za-z0-9._/+:\-]*(?![A-Za-z0-9])"),
+    re.compile(
+        r"(?<![A-Za-z0-9])(?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?(?:\s*(?:%|"
+        r"[A-Zµμ°][A-Za-z0-9²³µμ°%./-]{0,11}(?:\s+[A-Z][A-Z0-9²³µμ°%./-]{0,11})*|"
+        r"(?:mm|cm|km|m|in|ft|yd|psi|bar|kpa|mpa|pa|hz|kg|lb|lbs|kw|kv|ma|mil|bmt|inch)))?"
+        r"(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    ),
 )
 _DASH_TRANSLATION = str.maketrans({char: "-" for char in "‐‑‒–—―−"})
 _PUNCTUATION_RE = re.compile(r"[,:;()\[\]{}'\"`]+")
@@ -96,7 +95,7 @@ _PRELABEL_BLOCK_JSON_SCHEMA = {
     "required": sorted(_REQUIRED_BLOCK_FIELDS),
     "additionalProperties": False,
     "properties": {
-        "block_id": {"type": "string", "pattern": r"^.+-b\d{3}$"},
+        "block_id": {"type": "string", "pattern": r"^.+-b[0-9]{3}$"},
         "member_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
         "source_text": {"type": "string", "minLength": 1},
         "source_language": {"type": "string", "minLength": 1},
@@ -412,7 +411,7 @@ def _validate_block_shape(raw: object, sample_id: str, seen_block_ids: set[str])
     block_id = item["block_id"]
     if (
         not isinstance(block_id, str)
-        or not re.fullmatch(re.escape(sample_id) + r"-b\d{3}", block_id)
+        or not re.fullmatch(re.escape(sample_id) + r"-b[0-9]{3}", block_id)
         or block_id in seen_block_ids
     ):
         raise ValueError("block_id must be stable and unique")
@@ -607,16 +606,14 @@ def _members_in_reading_order(member_regions: list[dict]) -> list[dict]:
 
 def _validate_claimed_source_text(claimed_source_text: str, member_regions: list[dict]) -> None:
     claimed = _canonical_source_text(claimed_source_text)
-    cursor = 0
+    members = []
     for region in member_regions:
         source_text = region.get("source_text", region.get("text", ""))
         if not isinstance(source_text, str) or not source_text.strip():
             raise ValueError("referenced member source text must be a non-empty string")
-        member = _canonical_source_text(source_text)
-        position = claimed.find(member, cursor)
-        if position < 0:
-            raise ValueError("source_text must include member texts in reading order")
-        cursor = position + len(member)
+        members.append(_canonical_source_text(source_text))
+    if claimed != " ".join(members):
+        raise ValueError("source_text must exactly reconstruct member texts in reading order")
 
 
 def _canonical_source_text(value: str) -> str:
@@ -628,14 +625,18 @@ def _canonical_source_text(value: str) -> str:
 
 def derive_engineering_literals(source_text: str) -> list[str]:
     """Return unique source-ordered engineering runs that must survive translation exactly."""
-    seen = set()
-    result = []
-    for match in _LITERAL_PATTERN.finditer(source_text or ""):
-        literal = match.group(0).strip()
-        if literal and literal not in seen:
-            seen.add(literal)
-            result.append(literal)
-    return result
+    candidates = []
+    for priority, pattern in enumerate(_LITERAL_PATTERNS):
+        for match in pattern.finditer(source_text or ""):
+            literal = match.group(0).strip()
+            if literal:
+                candidates.append((match.start(), match.end(), priority, literal))
+    selected = []
+    for candidate in sorted(candidates, key=lambda item: (item[0], -(item[1] - item[0]), item[2])):
+        if any(candidate[0] < end and start < candidate[1] for start, end, _, _ in selected):
+            continue
+        selected.append(candidate)
+    return [literal for _, _, _, literal in sorted(selected)]
 
 
 def _candidate_region_ids(candidate_region_ids: Sequence[str] | None) -> set[str]:
