@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import stat
 import tempfile
 from urllib.parse import quote
 
@@ -71,13 +72,45 @@ def _regular_pdf(value: Path, label: str) -> Path:
     return resolved
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """Return true for symlinks and Windows junction/reparse-point entries."""
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(status, "st_file_attributes", 0)
+    return stat.S_ISLNK(status.st_mode) or bool(attributes & reparse_flag)
+
+
+def _audit_output_parent(path: Path) -> None:
+    parent = path.parent
+    if path.is_absolute():
+        current = Path(path.anchor)
+        parts = parent.parts[1:]
+    else:
+        current = Path.cwd()
+        parts = parent.parts
+    for part in parts:
+        if part in {"", "."}:
+            continue
+        current /= part
+        if _is_reparse_point(current):
+            raise ValueError("output_png parent must not use a symlink or reparse point")
+        if current.exists() and not current.is_dir():
+            raise ValueError("output_png parent must be a directory")
+
+
 def _output_png(value: Path) -> Path:
     path = Path(value)
     if path.suffix.lower() != ".png":
         raise ValueError("output_png must use the .png extension")
-    if path.exists() and (not path.is_file() or path.is_symlink()):
+    if _is_reparse_point(path):
+        raise ValueError("output_png must not be a symlink or reparse point")
+    _audit_output_parent(path)
+    if path.exists() and not path.is_file():
         raise ValueError("output_png must be a regular file path")
-    return path.resolve(strict=False)
+    return path.absolute()
 
 
 def _page_image(path: Path, dpi: int) -> tuple[Image.Image, tuple[float, float]]:
@@ -207,7 +240,15 @@ def _comparison_link(workspace: Path, value: object) -> str:
         target = (workspace / relative).resolve(strict=True)
     except OSError as error:
         raise ValueError("comparison_png must name an existing comparison PNG") from error
-    if not root.is_dir() or not target.is_file() or root not in target.parents:
+    workspace_contains_root = root != workspace and workspace in root.parents
+    workspace_contains_target = target != workspace and workspace in target.parents
+    if (
+        not root.is_dir()
+        or not target.is_file()
+        or not workspace_contains_root
+        or not workspace_contains_target
+        or root not in target.parents
+    ):
         raise ValueError("comparison_png must stay inside workspace comparisons")
     return quote(relative.as_posix(), safe="/")
 
@@ -268,12 +309,28 @@ def _stage_text(directory: Path, content: str) -> Path:
     return temporary
 
 
+def _stage_bytes(directory: Path, content: bytes) -> Path:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".benchmark-report-", suffix=".tmp", dir=directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return temporary
+
+
 def _backup(target: Path, directory: Path) -> Path | None:
     if not target.exists():
         return None
     if target.is_symlink() or not target.is_file():
         raise ValueError(f"report target must be a regular file: {target.name}")
-    return _stage_text(directory, target.read_text(encoding="utf-8"))
+    return _stage_bytes(directory, target.read_bytes())
 
 
 def _publish_pair(

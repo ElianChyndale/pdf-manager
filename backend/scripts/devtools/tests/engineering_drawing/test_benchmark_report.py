@@ -1,4 +1,5 @@
 import math
+import os
 from pathlib import Path
 
 import fitz
@@ -43,6 +44,20 @@ def _summary(workspace: Path, **changes: object) -> dict:
     }
     value.update(changes)
     return value
+
+
+def _directory_link_or_skip(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory links unavailable on this host: {error}")
+
+
+def _file_link_or_skip(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link)
+    except OSError as error:
+        pytest.skip(f"file links unavailable on this host: {error}")
 
 
 def test_render_comparison_scales_candidate_marker_and_is_deterministic(tmp_path: Path):
@@ -175,6 +190,39 @@ def test_render_comparison_rejects_non_png_destination(tmp_path: Path):
         render_comparison(source, candidate, tmp_path / "comparison.jpg", [], dpi=72)
 
 
+def test_render_comparison_rejects_dangling_symlink_destination(tmp_path: Path):
+    source = tmp_path / "source.pdf"
+    candidate = tmp_path / "candidate.pdf"
+    output = tmp_path / "comparison.png"
+    outside = tmp_path / "outside.png"
+    _pdf(source, "SOURCE")
+    _pdf(candidate, "CANDIDATE")
+    _file_link_or_skip(output, outside)
+
+    with pytest.raises(ValueError, match="output_png"):
+        render_comparison(source, candidate, output, [], dpi=72)
+
+    assert not outside.exists()
+    assert not list(tmp_path.glob(".comparison-*.tmp"))
+
+
+def test_render_comparison_rejects_reparse_parent_destination(tmp_path: Path):
+    source = tmp_path / "source.pdf"
+    candidate = tmp_path / "candidate.pdf"
+    outside = tmp_path / "outside"
+    output_parent = tmp_path / "linked-output"
+    _pdf(source, "SOURCE")
+    _pdf(candidate, "CANDIDATE")
+    outside.mkdir()
+    _directory_link_or_skip(output_parent, outside)
+
+    with pytest.raises(ValueError, match="output_png parent"):
+        render_comparison(source, candidate, output_parent / "comparison.png", [], dpi=72)
+
+    assert not (outside / "comparison.png").exists()
+    assert not list(outside.glob(".comparison-*.tmp"))
+
+
 def test_report_writes_atomic_json_html_and_url_quoted_escaped_links(tmp_path: Path):
     comparison = _comparison(tmp_path, "comparison test #1.png")
     summary = _summary(
@@ -199,6 +247,33 @@ def test_report_writes_atomic_json_html_and_url_quoted_escaped_links(tmp_path: P
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "href='../comparisons/comparison%20test%20%231.png'" in html
     assert "Engineering Drawing Benchmark" in html
+
+
+def test_report_rejects_comparisons_directory_linked_outside_workspace(
+    tmp_path: Path,
+):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    _directory_link_or_skip(workspace / "comparisons", outside)
+    Image.new("RGB", (1, 1), "white").save(outside / "comparison.png")
+    summary = {
+        "schema": "engineering-drawing-benchmark-report-v1",
+        "core_score": 84.25,
+        "samples": [
+            {
+                "sample_id": "sample-01",
+                "category": "table",
+                "score": 84.25,
+                "hard_failure_count": 0,
+                "comparison_png": "comparisons/comparison.png",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="comparison_png"):
+        write_benchmark_report(summary, workspace)
 
 
 @pytest.mark.parametrize(
@@ -272,8 +347,10 @@ def test_report_rolls_back_pair_when_final_html_publish_fails(
     reports.mkdir()
     json_path = reports / "benchmark-report.json"
     html_path = reports / "benchmark-report.html"
-    json_path.write_text("old-json", encoding="utf-8")
-    html_path.write_text("old-html", encoding="utf-8")
+    old_json = b"{\r\n  \"old\": true\r\n}\r\n"
+    old_html = b"<html>\r\n<body>old</body>\r\n</html>\r\n"
+    json_path.write_bytes(old_json)
+    html_path.write_bytes(old_html)
     real_replace = report.os.replace
 
     def fail_html_replace(source: object, destination: object) -> None:
@@ -286,8 +363,8 @@ def test_report_rolls_back_pair_when_final_html_publish_fails(
     with pytest.raises(OSError, match="simulated publish failure"):
         write_benchmark_report(_summary(tmp_path), tmp_path)
 
-    assert json_path.read_text(encoding="utf-8") == "old-json"
-    assert html_path.read_text(encoding="utf-8") == "old-html"
+    assert json_path.read_bytes() == old_json
+    assert html_path.read_bytes() == old_html
     assert not list(reports.glob(".benchmark-report-*"))
 
 
