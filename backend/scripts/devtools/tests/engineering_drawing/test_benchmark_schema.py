@@ -1,9 +1,11 @@
 from pathlib import Path
 import json
+import math
 
 import pytest
 
 from services.engineering_drawing.benchmark.schema import (
+    GoldBlock,
     GoldSample,
     load_challenge_manifest,
     load_core_manifest,
@@ -126,6 +128,39 @@ def test_gold_sample_is_deeply_immutable_and_serializable():
     with pytest.raises((AttributeError, TypeError)):
         sample.audit[0]["event"] = "changed"
     assert sample.to_dict() == _valid_gold_payload()
+
+
+def test_direct_gold_construction_deeply_freezes_nested_values():
+    payload = _valid_gold_payload()
+    raw_block = payload["blocks"][0]
+    block = GoldBlock(**raw_block)
+    sample = GoldSample(
+        schema=payload["schema"],
+        sample_id=payload["sample_id"],
+        gold_version=payload["gold_version"],
+        status=payload["status"],
+        page=payload["page"],
+        blocks=[block],
+        audit=payload["audit"],
+    )
+    raw_block["leader"]["color"] = "black"
+    payload["audit"][0]["event"] = "changed"
+    with pytest.raises((AttributeError, TypeError)):
+        sample.blocks[0].leader["color"] = "black"
+    with pytest.raises((AttributeError, TypeError)):
+        sample.audit[0]["event"] = "changed"
+    with pytest.raises(AttributeError):
+        sample.gold_version = 2
+    assert sample.blocks[0].leader["color"] == "dark_blue"
+    assert sample.audit[0]["event"] == "locked"
+
+
+@pytest.mark.parametrize("bound", (math.nan, math.inf, -math.inf))
+def test_gold_sample_rejects_non_finite_font_size_bounds(bound):
+    payload = _valid_gold_payload()
+    payload["blocks"][0]["font_size_range"] = [bound, 6.5]
+    with pytest.raises(ValueError, match="font_size_range must be finite"):
+        validate_gold_sample(GoldSample.from_dict(payload))
 
 
 @pytest.mark.parametrize(

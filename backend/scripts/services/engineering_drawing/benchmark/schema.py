@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -86,6 +87,33 @@ class GoldBlock:
     manual_review_required: bool = False
     legacy_fallback: bool = False
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_bbox", _rect(self.source_bbox, "source_bbox"))
+        object.__setattr__(
+            self,
+            "group_member_ids",
+            tuple(str(member_id) for member_id in self.group_member_ids),
+        )
+        object.__setattr__(
+            self, "literal_tokens", tuple(str(token) for token in self.literal_tokens)
+        )
+        object.__setattr__(
+            self,
+            "allowed_regions",
+            tuple(_rect(rect, "allowed_regions") for rect in self.allowed_regions),
+        )
+        object.__setattr__(
+            self,
+            "forbidden_zones",
+            tuple(_rect(rect, "forbidden_zones") for rect in self.forbidden_zones),
+        )
+        object.__setattr__(
+            self,
+            "font_size_range",
+            tuple(float(bound) for bound in self.font_size_range),
+        )
+        object.__setattr__(self, "leader", _freeze(dict(self.leader)))
+
 
 @dataclass(frozen=True)
 class GoldSample:
@@ -96,6 +124,13 @@ class GoldSample:
     page: Mapping[str, float | int]
     blocks: tuple[GoldBlock, ...]
     audit: tuple[Mapping[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "page", _freeze(dict(self.page)))
+        object.__setattr__(self, "blocks", tuple(self.blocks))
+        object.__setattr__(
+            self, "audit", tuple(_freeze(dict(item)) for item in self.audit)
+        )
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "GoldSample":
@@ -244,10 +279,11 @@ def validate_gold_sample(sample: GoldSample) -> None:
             raise ValueError("rotation must be orthogonal")
         if not block.source_text or not block.gold_translation:
             raise ValueError("source and gold translation are required")
-        if (
-            len(block.font_size_range) != 2
-            or block.font_size_range[0] > block.font_size_range[1]
-        ):
+        if len(block.font_size_range) != 2:
+            raise ValueError("font_size_range must contain an ordered minimum and maximum")
+        if not all(math.isfinite(bound) for bound in block.font_size_range):
+            raise ValueError("font_size_range must be finite")
+        if block.font_size_range[0] > block.font_size_range[1]:
             raise ValueError("font_size_range must contain an ordered minimum and maximum")
         if block.font_size_range[0] < 3.2:
             raise ValueError("font_size_range is below the workflow minimum")
