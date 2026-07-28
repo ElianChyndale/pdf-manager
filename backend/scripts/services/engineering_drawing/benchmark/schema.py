@@ -29,9 +29,10 @@ _MANIFEST_SCHEMAS = {
     "core": "engineering-drawing-core-set-v1",
     "challenge": "engineering-drawing-challenge-set-v1",
 }
-_MANIFEST_VERSION = re.compile(
-    r"(?:(?:core|challenge)(?:-test)?|test)-v[0-9]+"
-)
+_MANIFEST_VERSIONS = {
+    "core": frozenset({"core-v1", "test-v1"}),
+    "challenge": frozenset({"challenge-v1", "challenge-test-v1"}),
+}
 
 
 def validate_manifest_sample_fields(
@@ -173,9 +174,11 @@ class CoreManifest:
             raise ValueError("manifest schema does not match its set")
         if (
             type(self.benchmark_version) is not str
-            or _MANIFEST_VERSION.fullmatch(self.benchmark_version) is None
+            or self.benchmark_version not in _MANIFEST_VERSIONS[self.set_name]
         ):
-            raise ValueError("manifest benchmark_version must use the approved version format")
+            raise ValueError(
+                f"unsupported {self.set_name} manifest version (not approved)"
+            )
         for sample in self.samples:
             if not isinstance(sample, CoreSample):
                 raise ValueError("manifest samples must be CoreSample values")

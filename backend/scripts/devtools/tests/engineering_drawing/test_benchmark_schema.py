@@ -132,10 +132,16 @@ def test_direct_manifest_constructors_reject_coercive_inputs_and_arbitrary_ident
             benchmark_version="core-v1",
             samples=[sample],
         )
-    with pytest.raises(ValueError, match="approved version"):
+    with pytest.raises(ValueError, match="approved"):
         CoreManifest(
             schema="engineering-drawing-core-set-v1",
             benchmark_version="arbitrary-version",
+            samples=(sample,),
+        )
+    with pytest.raises(ValueError, match="approved"):
+        CoreManifest(
+            schema="engineering-drawing-core-set-v1",
+            benchmark_version="core-v999",
             samples=(sample,),
         )
 
