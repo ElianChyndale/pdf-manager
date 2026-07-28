@@ -83,6 +83,10 @@ def _is_reparse_point(path: Path) -> bool:
     return stat.S_ISLNK(status.st_mode) or bool(attributes & reparse_flag)
 
 
+def _is_strict_descendant(path: Path, root: Path) -> bool:
+    return path != root and root in path.parents
+
+
 def _audit_output_parent(path: Path) -> None:
     parent = path.parent
     if path.is_absolute():
@@ -240,8 +244,8 @@ def _comparison_link(workspace: Path, value: object) -> str:
         target = (workspace / relative).resolve(strict=True)
     except OSError as error:
         raise ValueError("comparison_png must name an existing comparison PNG") from error
-    workspace_contains_root = root != workspace and workspace in root.parents
-    workspace_contains_target = target != workspace and workspace in target.parents
+    workspace_contains_root = _is_strict_descendant(root, workspace)
+    workspace_contains_target = _is_strict_descendant(target, workspace)
     if (
         not root.is_dir()
         or not target.is_file()
@@ -372,8 +376,18 @@ def write_benchmark_report(summary: dict, workspace: Path) -> tuple[Path, Path]:
         raise ValueError("workspace must be an existing directory")
     normalized, rows = _validated_summary(summary, workspace_path)
     reports = workspace_path / "reports"
-    if reports.exists() and (reports.is_symlink() or not reports.is_dir()):
+    if _is_reparse_point(reports):
         raise ValueError("workspace reports must be a regular directory")
+    if reports.exists():
+        try:
+            resolved_reports = reports.resolve(strict=True)
+        except OSError as error:
+            raise ValueError("workspace reports must be a regular directory") from error
+        if (
+            not reports.is_dir()
+            or not _is_strict_descendant(resolved_reports, workspace_path)
+        ):
+            raise ValueError("workspace reports must be a regular directory")
     json_content = json.dumps(
         normalized, ensure_ascii=False, indent=2, allow_nan=False
     )

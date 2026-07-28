@@ -1,6 +1,7 @@
 import math
 import os
 from pathlib import Path
+import subprocess
 
 import fitz
 from PIL import Image
@@ -58,6 +59,20 @@ def _file_link_or_skip(link: Path, target: Path) -> None:
         os.symlink(target, link)
     except OSError as error:
         pytest.skip(f"file links unavailable on this host: {error}")
+
+
+def _junction_or_skip(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junctions are unavailable on this host")
+    result = subprocess.run(
+        f'mklink /J "{link}" "{target}"',
+        capture_output=True,
+        check=False,
+        shell=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"junction creation unavailable on this host: {result.stderr}")
 
 
 def test_render_comparison_scales_candidate_marker_and_is_deterministic(tmp_path: Path):
@@ -274,6 +289,29 @@ def test_report_rejects_comparisons_directory_linked_outside_workspace(
 
     with pytest.raises(ValueError, match="comparison_png"):
         write_benchmark_report(summary, workspace)
+
+
+def test_report_rejects_external_reports_junction_before_staging(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    workspace.mkdir()
+    external.mkdir()
+    (external / "keep.bin").write_bytes(b"keep\r\n\x00")
+    _junction_or_skip(workspace / "reports", external)
+    before = {path.name: path.read_bytes() for path in external.iterdir()}
+
+    with pytest.raises(ValueError, match="reports"):
+        write_benchmark_report(
+            {
+                "schema": "engineering-drawing-benchmark-report-v1",
+                "core_score": 0,
+                "samples": [],
+            },
+            workspace,
+        )
+
+    assert {path.name: path.read_bytes() for path in external.iterdir()} == before
+    assert not list(external.glob(".benchmark-report-*"))
 
 
 @pytest.mark.parametrize(
