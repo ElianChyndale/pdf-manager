@@ -70,6 +70,16 @@ _EVIDENCE_KEYS = {
     "subjective_sha256",
 }
 _ROTATIONS = {0, 90, 180, 270}
+_APPROVED_GOALS = frozenset(
+    "address association border_protection cell_wrap company company_information "
+    "dense_labels dense_vertical_labels detail dimensions elevation_labels elevations "
+    "equipment_ids equipment_terms graphics_text_mix identifiers image_text_mix "
+    "leader_avoidance leaders legend long_notes malay map materials multi_region "
+    "network_lines numbers product_note project_description repeated_equipment "
+    "repeated_terms right_information_column rotated_text semantic_block "
+    "system_relationships table table_rows tiny_text title_block units "
+    "vertical_boundaries voltage whitespace whitespace_layout".split()
+)
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -216,7 +226,13 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
         ):
             raise ValueError("manifest lock category is invalid")
         relative_pdf = record.get("relative_pdf")
-        if type(relative_pdf) is not str or not relative_pdf.strip() or "\\" in relative_pdf:
+        if (
+            type(relative_pdf) is not str
+            or not relative_pdf.strip()
+            or "\\" in relative_pdf
+            or ":" in relative_pdf
+            or relative_pdf.startswith("//")
+        ):
             raise ValueError("manifest lock relative_pdf is invalid")
         relative = PurePosixPath(relative_pdf)
         if (
@@ -249,6 +265,7 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
             type(goals) is not list
             or not goals
             or len(goals) > 64
+            or len(goals) != len(set(goals))
             or any(
                 type(goal) is not str
                 or not goal.strip()
@@ -256,12 +273,14 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
                 or len(goal) > 128
                 for goal in goals
             )
+            or any(goal not in _APPROVED_GOALS for goal in goals)
         ):
             raise ValueError("manifest lock goals are invalid")
         if (
             record.get("status") != "candidate"
             or type(record.get("page_number")) is not int
             or record["page_number"] < 1
+            or (record["set_name"] == "core" and record["page_number"] != 1)
             or type(record.get("dpi")) is not int
             or not 36 <= record["dpi"] <= 300
         ):
@@ -352,6 +371,30 @@ def validated_sample_context(workspace: Path, sample_id: str) -> dict[str, Any]:
     }
 
 
+def validate_page_identity(
+    page: object,
+    record: dict[str, Any],
+    *,
+    label: str,
+) -> None:
+    if type(page) is not dict or set(page) != {"width", "height", "rotation"}:
+        raise ValueError(f"{label} page must use the closed page schema")
+    for index, field in enumerate(("width", "height")):
+        value = page[field]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or abs(float(value) - float(record["page_size"][index])) > 0.01
+        ):
+            raise ValueError(f"{label} page size does not match frozen source")
+    if (
+        type(page["rotation"]) is not int
+        or page["rotation"] != record["page_rotation"]
+    ):
+        raise ValueError(f"{label} page rotation does not match frozen source")
+
+
 def _pdf_diagnostics(candidate_pdf: Path, source_pdf: Path, placements: list[dict]) -> dict:
     try:
         with fitz.open(candidate_pdf) as document, fitz.open(source_pdf) as source:
@@ -414,8 +457,8 @@ def _visible_translation_text(
     page: fitz.Page,
     translated_text: str,
     target: tuple[float, float, float, float],
-) -> bool:
-    visible_chars = []
+) -> list[tuple[float, float, float, float]]:
+    visible_chars: list[tuple[str, tuple[float, float, float, float]]] = []
     for span in page.get_texttrace():
         color = span.get("color")
         white = (
@@ -443,16 +486,23 @@ def _visible_translation_text(
             if area <= 0 or _intersection_area(bbox, target) / area < 0.5:
                 continue
             try:
-                visible_chars.append(chr(codepoint))
+                visible_chars.append((chr(codepoint), bbox))
             except (TypeError, ValueError):
                 continue
-    return _fold_text(translated_text) in _fold_text("".join(visible_chars))
+    expected = _fold_text(translated_text)
+    compact = _fold_text("".join(char for char, _bbox in visible_chars))
+    start = compact.find(expected)
+    if start < 0:
+        return []
+    # Engineering translations are predominantly CJK and whitespace folding
+    # does not change their character count.
+    return [bbox for _char, bbox in visible_chars[start : start + len(expected)]]
 
 
 def _region_raster_signal(
     source_page: fitz.Page,
     candidate_page: fitz.Page,
-    target: tuple[float, float, float, float],
+    glyph_bboxes: list[tuple[float, float, float, float]],
 ) -> bool:
     matrix = fitz.Matrix(2, 2)
     source = source_page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csGRAY)
@@ -461,22 +511,26 @@ def _region_raster_signal(
     )
     if source.width != candidate.width or source.height != candidate.height:
         return False
-    x0 = max(0, min(source.width, math.floor(target[0] * 2)))
-    y0 = max(0, min(source.height, math.floor(target[1] * 2)))
-    x1 = max(0, min(source.width, math.ceil(target[2] * 2)))
-    y1 = max(0, min(source.height, math.ceil(target[3] * 2)))
-    if x1 <= x0 or y1 <= y0:
-        return False
     source_bytes = source.samples
     candidate_bytes = candidate.samples
-    changed = 0
-    for y in range(y0, y1):
-        row = y * source.stride
-        for x in range(x0, x1):
-            offset = row + x
-            if abs(source_bytes[offset] - candidate_bytes[offset]) >= 12:
-                changed += 1
-    return changed >= max(3, math.ceil((x1 - x0) * (y1 - y0) * 0.002))
+    visible_glyphs = 0
+    for bbox in glyph_bboxes:
+        x0 = max(0, min(source.width, math.floor(bbox[0] * 2)))
+        y0 = max(0, min(source.height, math.floor(bbox[1] * 2)))
+        x1 = max(0, min(source.width, math.ceil(bbox[2] * 2)))
+        y1 = max(0, min(source.height, math.ceil(bbox[3] * 2)))
+        darker = 0
+        for y in range(y0, y1):
+            row = y * source.stride
+            for x in range(x0, x1):
+                offset = row + x
+                if candidate_bytes[offset] <= source_bytes[offset] - 12:
+                    darker += 1
+        if darker >= max(2, math.ceil((x1 - x0) * (y1 - y0) * 0.01)):
+            visible_glyphs += 1
+    return bool(glyph_bboxes) and visible_glyphs >= math.ceil(
+        len(glyph_bboxes) * 0.75
+    )
 
 
 def _point_in_rect(point: tuple[float, float], rect: tuple[float, ...]) -> bool:
@@ -676,21 +730,18 @@ def _candidate_visual_qa(
                 candidate_document[0].rect.height,
             )
             target_by_id = dict(target_rects)
-            visible_presence = {
-                region_id: (
-                    _visible_translation_text(
+            visible_presence = {}
+            for region_id, candidate in candidate_by_id.items():
+                glyph_bboxes = _visible_translation_text(
                         candidate_document[0],
                         str(candidate["translated_text"]),
                         target_by_id[region_id],
                     )
-                    and _region_raster_signal(
+                visible_presence[region_id] = bool(glyph_bboxes) and _region_raster_signal(
                         source_document[0],
                         candidate_document[0],
-                        target_by_id[region_id],
+                        glyph_bboxes,
                     )
-                )
-                for region_id, candidate in candidate_by_id.items()
-            }
     except (fitz.FileDataError, RuntimeError) as error:
         raise ValueError("benchmark candidate must be a renderable PDF") from error
 
@@ -739,6 +790,9 @@ def _candidate_visual_qa(
         for block_id, block in gold_by_id.items()
         for rect in block["forbidden_zones"]
     )
+    obstacles.extend(
+        (region_id, rect, "target") for region_id, rect in target_rects
+    )
     leader_collision_ids = set()
     for region_id, segments in leader_segments.items():
         own_source = _rect_value(
@@ -747,7 +801,7 @@ def _candidate_visual_qa(
         for segment in segments:
             for owner, obstacle, kind in obstacles:
                 if owner == region_id and (
-                    kind == "source" or obstacle == own_source
+                    kind in {"source", "target"} or obstacle == own_source
                 ):
                     continue
                 if _segment_hits_rect(*segment, obstacle):
@@ -884,6 +938,11 @@ def _preflight(workspace: Path, candidate_root: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{sample_id} locked gold is invalid") from error
         if gold.sample_id != sample_id or gold.status != "locked":
             raise ValueError(f"{sample_id} locked gold identity or status is invalid")
+        validate_page_identity(
+            gold_payload.get("page"),
+            record,
+            label=f"{sample_id} locked gold",
+        )
         if not gold.blocks:
             raise ValueError(f"{sample_id} locked gold must contain blocks")
 

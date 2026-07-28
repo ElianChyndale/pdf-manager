@@ -26,6 +26,7 @@ from .benchmark.runner import canonical_digest
 from .benchmark.runner import evaluate_workspace
 from .benchmark.runner import sha256_file
 from .benchmark.runner import validated_sample_context
+from .benchmark.runner import validate_page_identity
 from .benchmark.schema import load_challenge_manifest, load_core_manifest
 from .benchmark.schema import GoldSample, validate_gold_sample
 from .benchmark.workspace import seed_workspace
@@ -252,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             request_fn=request_chat_content,
         )
+        validate_page_identity(
+            result.get("page"), sample_record, label="prelabel output"
+        )
         _publish_json_exclusive(
             [
                 (prelabel_path, result),
@@ -321,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:
             or prelabel.get("page") != prelabel_evidence.get("page")
         ):
             raise ValueError("benchmark prelabel identity does not match requested sample")
+        validate_page_identity(
+            prelabel.get("page"), context["record"], label="adjudication prelabel"
+        )
         decisions = json.loads(args.decisions.read_text(encoding="utf-8"))[
             "decisions"
         ]
@@ -331,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
             gold = lock_gold(gold, args.actor, args.decided_at)
         if gold.sample_id != args.sample_id:
             raise ValueError("adjudicated gold identity does not match requested sample")
+        validate_page_identity(
+            gold.to_dict().get("page"),
+            context["record"],
+            label="adjudicated gold",
+        )
         output_name = (
             "gold.locked.json"
             if gold.status == "locked"
@@ -356,6 +368,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("benchmark locked gold is invalid") from error
         if locked_gold.sample_id != args.sample_id or locked_gold.status != "locked":
             raise ValueError("benchmark visual review requires matching locked gold")
+        validate_page_identity(
+            locked_gold.to_dict().get("page"),
+            context["record"],
+            label="visual-review locked gold",
+        )
         source_url = "data:image/png;base64," + base64.b64encode(
             context["source_png"].read_bytes()
         ).decode("ascii")

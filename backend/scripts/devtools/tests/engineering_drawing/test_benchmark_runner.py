@@ -39,6 +39,7 @@ def _candidate_page(
     render_mode: int = 0,
     opacity: float = 1.0,
     color: tuple[float, float, float] = (0, 0, 0),
+    overpaint: bool = False,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
@@ -54,6 +55,20 @@ def _candidate_page(
             fill_opacity=opacity,
             color=color,
         )
+        if overpaint:
+            page.draw_rect(
+                fitz.Rect(120, 10, 155, 35),
+                color=(1, 1, 1),
+                fill=(1, 1, 1),
+                overlay=True,
+            )
+            page.draw_circle(
+                (205, 20),
+                2,
+                color=(0, 0, 0),
+                fill=(0, 0, 0),
+                overlay=True,
+            )
     document.save(path)
     document.close()
 
@@ -437,7 +452,7 @@ def test_evaluate_rejects_changed_manifest_record_with_same_evidence(
     lock_path = workspace / "manifest.lock.json"
     sample_path = workspace / "samples/core-03/sample.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    lock["samples"][0]["goals"] = ["changed_goal"]
+    lock["samples"][0]["category"] = "changed_category"
     _write_json(lock_path, lock)
     _write_json(sample_path, lock["samples"][0])
 
@@ -449,10 +464,19 @@ def test_evaluate_rejects_changed_manifest_record_with_same_evidence(
     ("field", "value", "message"),
     [
         ("relative_pdf", "../escape.pdf", "relative_pdf"),
+        ("relative_pdf", "C:/escape.pdf", "relative_pdf"),
+        ("relative_pdf", r"C:\escape.pdf", "relative_pdf"),
+        ("relative_pdf", r"\\server\share\escape.pdf", "relative_pdf"),
+        ("relative_pdf", r"\\?\C:\escape.pdf", "relative_pdf"),
+        ("relative_pdf", r"\\.\NUL.pdf", "relative_pdf"),
+        ("page_number", 2, "metadata"),
         ("page_size", [True, 200], "page_size"),
         ("page_size", [float("nan"), 200], "page_size"),
         ("page_rotation", True, "page_rotation"),
         ("goals", [""], "goals"),
+        ("goals", ["semantic_block", "semantic_block"], "goals"),
+        ("goals", ["unknown_goal"], "goals"),
+        ("goals", ["x" * 129], "goals"),
     ],
 )
 def test_manifest_rejects_invalid_closed_metadata(
@@ -533,6 +557,7 @@ def test_byte_identical_source_pdf_cannot_satisfy_translation_evidence(
         {"render_mode": 3},
         {"opacity": 0.0},
         {"color": (1, 1, 1)},
+        {"overpaint": True},
         {"translation_point": (225, 125)},
     ],
 )
@@ -687,6 +712,80 @@ def test_malformed_diagonal_leader_path_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="orthogonal"):
         evaluate_workspace(workspace, candidate_root)
+
+
+def test_leader_crossing_other_candidate_target_is_collision(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import _candidate_visual_qa
+
+    source = tmp_path / "source.pdf"
+    candidate = tmp_path / "candidate.pdf"
+    document = fitz.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((20, 30), "ROOF SYSTEM")
+    page.insert_text((20, 70), "SECOND")
+    document.save(source)
+    document.close()
+    document = fitz.open()
+    page = document.new_page(width=300, height=200)
+    page.insert_text((20, 30), "ROOF SYSTEM")
+    page.insert_text((20, 70), "SECOND")
+    page.insert_text((125, 25), "屋面系统", fontname="china-s", fontsize=5)
+    page.insert_text((106, 28), "第二", fontname="china-s", fontsize=5)
+    document.save(candidate)
+    document.close()
+    gold = [
+        {**_gold()["blocks"][0], "leader": {**_gold()["blocks"][0]["leader"], "allowed": True}},
+        {
+            **_gold()["blocks"][0],
+            "block_id": "core-03-b002",
+            "source_text": "SECOND",
+            "source_bbox": [20, 58, 100, 75],
+            "gold_translation": "第二",
+            "allowed_regions": [[105, 20, 115, 30]],
+            "forbidden_zones": [[20, 58, 100, 75]],
+        },
+    ]
+    regions = [
+        {
+            **_candidate_region(),
+            "leader": {
+                "status": "drawn", "color": "dark_blue", "width_points": 0.32,
+                "route": "orthogonal", "arrow": False,
+            },
+        },
+        {
+            **_candidate_region(),
+            "block_id": "core-03-b002",
+            "translated_text": "第二",
+            "target_bbox": [105, 20, 115, 30],
+        },
+    ]
+    placements = [
+        {
+            "region_id": "core-03-b001", "page_index": 0,
+            "source_bbox": [20, 18, 100, 35], "target_bbox": [120, 10, 180, 30],
+            "translated_text": "屋面系统", "status": "inline_near",
+            "coverage_status": "translated",
+            "leader": {"status": "drawn", "path": [[100, 25], [120, 25]]},
+        },
+        {
+            "region_id": "core-03-b002", "page_index": 0,
+            "source_bbox": [20, 58, 100, 75], "target_bbox": [105, 20, 115, 30],
+            "translated_text": "第二", "status": "inline_near",
+            "coverage_status": "translated",
+            "leader": {"status": "not_needed", "path": []},
+        },
+    ]
+
+    result = _candidate_visual_qa(
+        candidate_pdf=candidate,
+        source_pdf=source,
+        gold_blocks=gold,
+        candidate_regions=regions,
+        placements=placements,
+    )
+
+    assert result["leader_collision_count"] == 1
 
 
 def test_malformed_baseline_preserves_existing_artifacts(tmp_path: Path) -> None:
@@ -869,6 +968,60 @@ def test_adjudication_rejects_prelabel_for_different_sample(
     assert not list(sample_dir.glob("gold.*.json"))
 
 
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"width": 600, "height": 400, "rotation": 0},
+        {"width": 300, "height": 200, "rotation": 90},
+    ],
+)
+def test_adjudication_rejects_wrong_prelabel_page_without_gold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, page: dict
+) -> None:
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    sample_dir = workspace / "samples/core-03"
+    (sample_dir / "gold.locked.json").unlink()
+    record = json.loads((sample_dir / "sample.json").read_text(encoding="utf-8"))
+    _write_json(sample_dir / "prelabel.json", {"sample_id": "core-03", "page": page})
+    _write_json(
+        sample_dir / "prelabel.evidence.json",
+        {
+            "schema": "engineering-drawing-prelabel-evidence-v1",
+            "sample_id": "core-03",
+            "benchmark_version": "test-v1",
+            "manifest_record_sha256": canonical_digest(record),
+            "source_sha256": record["source_sha256"],
+            "preview_sha256": record["preview_sha256"],
+            "regions_sha256": "a" * 64,
+            "prelabel_sha256": hashlib.sha256(
+                (sample_dir / "prelabel.json").read_bytes()
+            ).hexdigest(),
+            "page": page,
+        },
+    )
+    decisions = tmp_path / "decisions.json"
+    _write_json(decisions, {"decisions": []})
+    monkeypatch.setattr(
+        engineering_cli,
+        "apply_adjudication",
+        lambda *_args: pytest.fail("page mismatch must precede adjudication"),
+    )
+
+    with pytest.raises(ValueError, match="page"):
+        main(
+            [
+                "benchmark-adjudicate",
+                "--workspace", str(workspace),
+                "--sample-id", "core-03",
+                "--decisions", str(decisions),
+                "--decided-at", "2026-07-28T10:00:00+08:00",
+            ]
+        )
+    assert not list(sample_dir.glob("gold.*.json"))
+
+
 def test_adjudication_publishes_once_then_refuses_different_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -906,7 +1059,7 @@ def test_adjudication_publishes_once_then_refuses_different_decision(
     fake_gold = SimpleNamespace(
         sample_id="core-03",
         status="adjudicated",
-        to_dict=lambda: {"schema": "test", "value": "first"},
+        to_dict=lambda: {"schema": "test", "value": "first", "page": page},
     )
     monkeypatch.setattr(
         engineering_cli, "apply_adjudication", lambda *_args: fake_gold
