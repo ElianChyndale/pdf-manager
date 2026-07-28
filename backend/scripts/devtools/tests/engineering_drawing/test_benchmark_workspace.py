@@ -104,10 +104,8 @@ def test_seed_workspace_rejects_traversal_sample_id_without_external_write(tmp_p
     source_root = tmp_path / "source"
     source_root.mkdir()
     _write_pdf(source_root / "one.pdf")
-    manifest = _manifest(_sample("../../outside"))
-
     with pytest.raises(ValueError, match="sample_id"):
-        seed_workspace(source_root, tmp_path / "benchmark", manifest)
+        _manifest(_sample("../../outside"))
 
     assert not (tmp_path / "outside").exists()
     assert not (tmp_path / "benchmark").exists()
@@ -143,15 +141,12 @@ def test_seed_workspace_rejects_invalid_manifest_before_any_write(
     assert not list(tmp_path.rglob("manifest.lock.json"))
 
 
-def test_seed_workspace_rejects_cross_set_duplicate_ids_before_writing(tmp_path: Path):
+def test_seed_workspace_rejects_cross_set_identity_before_writing(tmp_path: Path):
     source_root = tmp_path / "source"
     source_root.mkdir()
     _write_pdf(source_root / "one.pdf")
-    core = _manifest(_sample("shared-01"))
-    challenge = _manifest(_sample("shared-01"), set_name="challenge")
-
-    with pytest.raises(ValueError, match="duplicate sample_id"):
-        seed_workspace(source_root, tmp_path / "benchmark", core, challenge_manifest=challenge)
+    with pytest.raises(ValueError, match="challenge sample_id"):
+        _manifest(_sample("core-01"), set_name="challenge")
 
     assert not (tmp_path / "benchmark").exists()
 

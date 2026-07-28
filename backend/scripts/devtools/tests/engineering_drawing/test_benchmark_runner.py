@@ -41,6 +41,7 @@ def _candidate_page(
     color: tuple[float, float, float] = (0, 0, 0),
     overpaint: bool = False,
     overpaint_with_glyph_dots: bool = False,
+    overpaint_with_white_image_and_glyph_dots: bool = False,
     rotation: int = 0,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,13 +64,26 @@ def _candidate_page(
             for raw in span.get("chars", ())
             if len(raw) >= 4 and chr(raw[0]) in "屋面系统"
         ]
-        if overpaint or overpaint_with_glyph_dots:
-            page.draw_rect(
-                fitz.Rect(120, 10, 155, 35),
-                color=(1, 1, 1),
-                fill=(1, 1, 1),
-                overlay=True,
-            )
+        if (
+            overpaint
+            or overpaint_with_glyph_dots
+            or overpaint_with_white_image_and_glyph_dots
+        ):
+            if overpaint_with_white_image_and_glyph_dots:
+                white = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 140, 100), 0)
+                white.clear_with(255)
+                page.insert_image(
+                    fitz.Rect(120, 10, 155, 35),
+                    pixmap=white,
+                    overlay=True,
+                )
+            else:
+                page.draw_rect(
+                    fitz.Rect(120, 10, 155, 35),
+                    color=(1, 1, 1),
+                    fill=(1, 1, 1),
+                    overlay=True,
+                )
             if overpaint_with_glyph_dots:
                 for glyph in traced_glyphs:
                     page.draw_circle(
@@ -79,6 +93,23 @@ def _candidate_page(
                         fill=(0, 0, 0),
                         overlay=True,
                     )
+            elif overpaint_with_white_image_and_glyph_dots:
+                for glyph in traced_glyphs:
+                    for x_fraction, y_fraction in (
+                        (0.2, 0.25),
+                        (0.5, 0.75),
+                        (0.8, 0.4),
+                    ):
+                        page.draw_circle(
+                            (
+                                glyph.x0 + glyph.width * x_fraction,
+                                glyph.y0 + glyph.height * y_fraction,
+                            ),
+                            0.175,
+                            color=(0, 0, 0),
+                            fill=(0, 0, 0),
+                            overlay=True,
+                        )
             else:
                 page.draw_circle(
                     (205, 20),
@@ -678,6 +709,28 @@ def test_overpainted_translation_with_dot_in_every_glyph_bbox_is_hard_failure(
     candidate = candidate_root / "core-03.pdf"
     candidate.unlink()
     _candidate_page(candidate, overpaint_with_glyph_dots=True)
+    _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert result["core_score"] < 100
+    assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
+
+
+def test_white_image_overpaint_with_sparse_glyph_dots_is_hard_failure(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(
+        candidate,
+        overpaint_with_white_image_and_glyph_dots=True,
+    )
     _refresh_evidence_hash(candidate_root, "candidate_sha256", "core-03.pdf")
 
     result = evaluate_workspace(workspace, candidate_root)

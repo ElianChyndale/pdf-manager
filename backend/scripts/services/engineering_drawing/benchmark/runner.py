@@ -219,6 +219,8 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("manifest lock category is invalid")
         try:
             validate_manifest_sample_fields(
+                sample_id=sample_id,
+                category=record.get("category"),
                 relative_pdf=record.get("relative_pdf"),
                 page_number=record.get("page_number"),
                 goals=record.get("goals"),
@@ -518,6 +520,22 @@ def _later_opaque_overpaint(
     text_seqno: int,
 ) -> bool:
     glyph_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+    for seqno, item in enumerate(page.get_bboxlog()):
+        if seqno <= text_seqno or len(item) < 2:
+            continue
+        paint_type = str(item[0])
+        if paint_type not in {
+            "fill-image",
+            "fill-path",
+            "fill-shade",
+            "fill-text",
+            "stroke-path",
+            "stroke-text",
+        }:
+            continue
+        paint_bbox = tuple(float(value) for value in item[1])
+        if _intersection_area(bbox, paint_bbox) >= glyph_area * 0.9:
+            return True
     for drawing in page.get_drawings():
         if (
             int(drawing.get("seqno", -1)) <= text_seqno

@@ -49,6 +49,8 @@ def _preflight(
     for set_name, selected_manifest in manifest_sets:
         for spec in selected_manifest.samples:
             validate_manifest_sample_fields(
+                sample_id=spec.sample_id,
+                category=spec.category,
                 relative_pdf=spec.relative_pdf,
                 page_number=spec.page_number,
                 goals=spec.goals,

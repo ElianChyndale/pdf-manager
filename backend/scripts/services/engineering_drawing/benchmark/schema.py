@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -20,16 +21,37 @@ APPROVED_GOALS = frozenset(
     "system_relationships table table_rows tiny_text title_block units "
     "vertical_boundaries voltage whitespace whitespace_layout".split()
 )
+MANIFEST_FIELDS = frozenset({"schema", "benchmark_version", "samples"})
+MANIFEST_SAMPLE_FIELDS = frozenset(
+    {"sample_id", "category", "relative_pdf", "page_number", "goals"}
+)
 
 
 def validate_manifest_sample_fields(
     *,
+    sample_id: object,
+    category: object,
     relative_pdf: object,
     page_number: object,
     goals: object,
     set_name: str | None = None,
 ) -> None:
     """Validate portable manifest fields before they can reach filesystem code."""
+    if type(sample_id) is not str or re.fullmatch(
+        r"(?:core|challenge)-[0-9]{2,3}", sample_id
+    ) is None:
+        raise ValueError("sample_id must be a core or challenge benchmark ID")
+    if set_name is not None and re.fullmatch(
+        rf"{re.escape(set_name)}-[0-9]{{2,3}}", sample_id
+    ) is None:
+        raise ValueError(f"{set_name} sample_id must match its manifest set")
+    if (
+        type(category) is not str
+        or not category
+        or category != category.strip()
+        or len(category) > 128
+    ):
+        raise ValueError("category must be a nonempty string")
     if (
         type(relative_pdf) is not str
         or not relative_pdf
@@ -119,6 +141,8 @@ class CoreSample:
     def __post_init__(self) -> None:
         object.__setattr__(self, "goals", tuple(self.goals))
         validate_manifest_sample_fields(
+            sample_id=self.sample_id,
+            category=self.category,
             relative_pdf=self.relative_pdf,
             page_number=self.page_number,
             goals=self.goals,
@@ -136,10 +160,16 @@ class CoreManifest:
         object.__setattr__(self, "samples", tuple(self.samples))
         if self.set_name not in {"core", "challenge"}:
             raise ValueError("manifest set_name must be core or challenge")
+        if type(self.schema) is not str or not self.schema:
+            raise ValueError("manifest schema must be a nonempty string")
+        if type(self.benchmark_version) is not str or not self.benchmark_version:
+            raise ValueError("manifest benchmark_version must be a nonempty string")
         for sample in self.samples:
             if not isinstance(sample, CoreSample):
                 raise ValueError("manifest samples must be CoreSample values")
             validate_manifest_sample_fields(
+                sample_id=sample.sample_id,
+                category=sample.category,
                 relative_pdf=sample.relative_pdf,
                 page_number=sample.page_number,
                 goals=sample.goals,
@@ -278,21 +308,49 @@ class GoldSample:
         }
 
 
-def load_core_manifest(path: Path) -> CoreManifest:
+def _load_manifest_payload(path: Path, set_name: str) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    samples = tuple(
+    if type(payload) is not dict or set(payload) != MANIFEST_FIELDS:
+        raise ValueError("manifest fields must match the closed schema")
+    if type(payload["schema"]) is not str:
+        raise ValueError("manifest schema must be a string")
+    if type(payload["benchmark_version"]) is not str:
+        raise ValueError("manifest benchmark_version must be a string")
+    if type(payload["samples"]) is not list:
+        raise ValueError("manifest samples must be a list")
+    for item in payload["samples"]:
+        if type(item) is not dict or set(item) != MANIFEST_SAMPLE_FIELDS:
+            raise ValueError("manifest sample fields must match the closed schema")
+        validate_manifest_sample_fields(
+            sample_id=item["sample_id"],
+            category=item["category"],
+            relative_pdf=item["relative_pdf"],
+            page_number=item["page_number"],
+            goals=item["goals"],
+            set_name=set_name,
+        )
+    return payload
+
+
+def _manifest_samples(payload: dict[str, Any]) -> tuple[CoreSample, ...]:
+    return tuple(
         CoreSample(
-            sample_id=str(item["sample_id"]),
-            category=str(item["category"]),
-            relative_pdf=str(item["relative_pdf"]),
-            page_number=int(item["page_number"]),
-            goals=tuple(str(goal) for goal in item["goals"]),
+            sample_id=item["sample_id"],
+            category=item["category"],
+            relative_pdf=item["relative_pdf"],
+            page_number=item["page_number"],
+            goals=tuple(item["goals"]),
         )
         for item in payload["samples"]
     )
+
+
+def load_core_manifest(path: Path) -> CoreManifest:
+    payload = _load_manifest_payload(path, "core")
+    samples = _manifest_samples(payload)
     manifest = CoreManifest(
-        schema=str(payload["schema"]),
-        benchmark_version=str(payload["benchmark_version"]),
+        schema=payload["schema"],
+        benchmark_version=payload["benchmark_version"],
         samples=samples,
         set_name="core",
     )
@@ -314,26 +372,17 @@ def load_core_manifest(path: Path) -> CoreManifest:
 
 
 def load_challenge_manifest(path: Path) -> CoreManifest:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = _load_manifest_payload(path, "challenge")
     if payload.get("schema") != "engineering-drawing-challenge-set-v1":
         raise ValueError("unsupported challenge manifest schema")
     if payload.get("benchmark_version") != "challenge-v1":
         raise ValueError("unsupported challenge manifest version")
-    samples = tuple(
-        CoreSample(
-            sample_id=str(item["sample_id"]),
-            category=str(item["category"]),
-            relative_pdf=str(item["relative_pdf"]),
-            page_number=int(item["page_number"]),
-            goals=tuple(str(goal) for goal in item["goals"]),
-        )
-        for item in payload.get("samples", [])
-    )
+    samples = _manifest_samples(payload)
     if len({item.sample_id for item in samples}) != len(samples):
         raise ValueError("challenge sample IDs must be unique")
     return CoreManifest(
-        schema=str(payload["schema"]),
-        benchmark_version=str(payload["benchmark_version"]),
+        schema=payload["schema"],
+        benchmark_version=payload["benchmark_version"],
         samples=samples,
         set_name="challenge",
     )

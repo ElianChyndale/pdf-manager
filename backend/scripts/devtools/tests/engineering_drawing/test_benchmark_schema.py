@@ -293,3 +293,96 @@ def test_core_manifest_rejects_case_insensitive_duplicate_pdf_path(tmp_path):
     payload["samples"][1]["relative_pdf"] = payload["samples"][0]["relative_pdf"].upper()
     with pytest.raises(ValueError, match="PDF paths must be unique"):
         load_core_manifest(_write_payload(tmp_path, "core.json", payload))
+
+
+@pytest.mark.parametrize("unknown_field", ("extra", "set_name"))
+def test_core_manifest_loader_rejects_unknown_top_level_fields(
+    tmp_path: Path, unknown_field: str
+) -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/engineering_drawing/benchmark/core-set.v1.json"
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload[unknown_field] = "unexpected"
+
+    with pytest.raises(ValueError, match="manifest fields"):
+        load_core_manifest(_write_payload(tmp_path, "core.json", payload))
+
+
+def test_manifest_loader_rejects_unknown_sample_field(tmp_path: Path) -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/engineering_drawing/benchmark/core-set.v1.json"
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["samples"][0]["extra"] = True
+
+    with pytest.raises(ValueError, match="sample fields"):
+        load_core_manifest(_write_payload(tmp_path, "core.json", payload))
+
+
+@pytest.mark.parametrize("page_number", (True, 1.0, 1.5, "1"))
+def test_manifest_loader_rejects_non_integer_page_number(
+    tmp_path: Path, page_number: object
+) -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/engineering_drawing/benchmark/core-set.v1.json"
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["samples"][0]["page_number"] = page_number
+
+    with pytest.raises(ValueError, match="page_number"):
+        load_core_manifest(_write_payload(tmp_path, "core.json", payload))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("sample_id", 3), ("category", 3), ("relative_pdf", 3), ("goals", [3])),
+)
+def test_manifest_loader_rejects_non_string_sample_values(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/engineering_drawing/benchmark/core-set.v1.json"
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["samples"][0][field] = value
+
+    with pytest.raises(ValueError):
+        load_core_manifest(_write_payload(tmp_path, "core.json", payload))
+
+
+def test_challenge_manifest_rejects_core_sample_identity(tmp_path: Path) -> None:
+    payload = {
+        "schema": "engineering-drawing-challenge-set-v1",
+        "benchmark_version": "challenge-v1",
+        "samples": [
+            {
+                "sample_id": "core-99",
+                "category": "detail",
+                "relative_pdf": "one.pdf",
+                "page_number": 1,
+                "goals": ["semantic_block"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="challenge sample_id"):
+        load_challenge_manifest(_write_payload(tmp_path, "challenge.json", payload))
+
+
+def test_direct_manifest_rejects_sample_identity_from_wrong_set() -> None:
+    sample = CoreSample(
+        "core-99", "detail", "one.pdf", 1, ("semantic_block",)
+    )
+
+    with pytest.raises(ValueError, match="challenge sample_id"):
+        CoreManifest(
+            schema="engineering-drawing-challenge-set-v1",
+            benchmark_version="challenge-v1",
+            samples=(sample,),
+            set_name="challenge",
+        )
