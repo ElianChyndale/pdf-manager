@@ -9,6 +9,7 @@ import fitz
 import pytest
 
 import services.engineering_drawing.cli as engineering_cli
+from services.engineering_drawing.benchmark.runner import canonical_digest
 from services.engineering_drawing.benchmark.schema import CoreManifest, CoreSample
 from services.engineering_drawing.cli import main
 
@@ -30,17 +31,28 @@ def _one_page(path: Path, text: str) -> None:
     document.close()
 
 
-def _candidate_page(path: Path, *, include_translation: bool = True) -> None:
+def _candidate_page(
+    path: Path,
+    *,
+    include_translation: bool = True,
+    translation_point: tuple[float, float] = (125, 25),
+    render_mode: int = 0,
+    opacity: float = 1.0,
+    color: tuple[float, float, float] = (0, 0, 0),
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = fitz.open()
     page = document.new_page(width=300, height=200)
     page.insert_text((20, 30), "ROOF SYSTEM")
     if include_translation:
         page.insert_text(
-            (125, 25),
+            translation_point,
             "屋面系统",
             fontname="china-s",
             fontsize=5,
+            render_mode=render_mode,
+            fill_opacity=opacity,
+            color=color,
         )
     document.save(path)
     document.close()
@@ -184,6 +196,13 @@ def _seed_evaluation_tree(workspace: Path, candidate_root: Path) -> None:
         {
             "schema": "engineering-drawing-candidate-evidence-v1",
             "sample_id": "core-03",
+            "benchmark_version": "test-v1",
+            "manifest_record_sha256": canonical_digest(record),
+            "source_sha256": source_sha256,
+            "preview_sha256": record["preview_sha256"],
+            "locked_gold_sha256": hashlib.sha256(
+                (sample_dir / "gold.locked.json").read_bytes()
+            ).hexdigest(),
             "candidate_sha256": hashlib.sha256(
                 (candidate_root / "core-03.pdf").read_bytes()
             ).hexdigest(),
@@ -375,6 +394,86 @@ def test_evaluate_rejects_tampered_frozen_source_before_writing_artifacts(
     assert not (workspace / "reports").exists()
 
 
+def test_evaluate_rejects_changed_preview_with_same_candidate_sidecars(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    preview = workspace / "samples/core-03/source.png"
+    preview.write_bytes(preview.read_bytes() + b"stale")
+
+    with pytest.raises(ValueError, match="preview hash"):
+        evaluate_workspace(workspace, candidate_root)
+
+
+def test_evaluate_rejects_changed_locked_gold_with_same_evidence(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    gold_path = workspace / "samples/core-03/gold.locked.json"
+    gold = json.loads(gold_path.read_text(encoding="utf-8"))
+    gold["blocks"][0]["manual_review_required"] = True
+    _write_json(gold_path, gold)
+
+    with pytest.raises(ValueError, match="evidence hash mismatch"):
+        evaluate_workspace(workspace, candidate_root)
+
+
+def test_evaluate_rejects_changed_manifest_record_with_same_evidence(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    lock_path = workspace / "manifest.lock.json"
+    sample_path = workspace / "samples/core-03/sample.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["samples"][0]["goals"] = ["changed_goal"]
+    _write_json(lock_path, lock)
+    _write_json(sample_path, lock["samples"][0])
+
+    with pytest.raises(ValueError, match="evidence hash mismatch"):
+        evaluate_workspace(workspace, candidate_root)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("relative_pdf", "../escape.pdf", "relative_pdf"),
+        ("page_size", [True, 200], "page_size"),
+        ("page_size", [float("nan"), 200], "page_size"),
+        ("page_rotation", True, "page_rotation"),
+        ("goals", [""], "goals"),
+    ],
+)
+def test_manifest_rejects_invalid_closed_metadata(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    lock_path = workspace / "manifest.lock.json"
+    sample_path = workspace / "samples/core-03/sample.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["samples"][0][field] = value
+    _write_json(lock_path, lock)
+    _write_json(sample_path, lock["samples"][0])
+
+    with pytest.raises(ValueError, match=message):
+        evaluate_workspace(workspace, candidate_root)
+
+
 def _refresh_evidence_hash(
     candidate_root: Path, field: str, artifact_name: str
 ) -> None:
@@ -403,6 +502,58 @@ def test_source_only_candidate_is_a_hard_failure(tmp_path: Path) -> None:
 
     assert result["core_score"] < 100
     assert result["hard_failure_count"] >= 1
+    assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
+
+
+def test_byte_identical_source_pdf_cannot_satisfy_translation_evidence(
+    tmp_path: Path,
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.write_bytes(
+        (workspace / "samples/core-03/source.pdf").read_bytes()
+    )
+    _refresh_evidence_hash(
+        candidate_root, "candidate_sha256", "core-03.pdf"
+    )
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert result["core_score"] < 100
+    assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
+
+
+@pytest.mark.parametrize(
+    "candidate_options",
+    [
+        {"render_mode": 3},
+        {"opacity": 0.0},
+        {"color": (1, 1, 1)},
+        {"translation_point": (225, 125)},
+    ],
+)
+def test_invisible_or_off_location_translation_is_a_hard_failure(
+    tmp_path: Path, candidate_options: dict
+) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    candidate = candidate_root / "core-03.pdf"
+    candidate.unlink()
+    _candidate_page(candidate, **candidate_options)
+    _refresh_evidence_hash(
+        candidate_root, "candidate_sha256", "core-03.pdf"
+    )
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert result["core_score"] < 100
     assert "untranslated_candidate" in result["samples"][0]["hard_failure_ids"]
 
 
@@ -449,6 +600,95 @@ def test_evaluate_rejects_region_placement_mismatch_before_writes(
     assert not (workspace / "reports").exists()
 
 
+def _configure_drawn_leader(
+    workspace: Path,
+    candidate_root: Path,
+    path: list[list[float]],
+) -> None:
+    gold_path = workspace / "samples/core-03/gold.locked.json"
+    gold = json.loads(gold_path.read_text(encoding="utf-8"))
+    gold["blocks"][0]["forbidden_zones"].append([105, 0, 115, 40])
+    gold["blocks"][0]["leader"]["allowed"] = True
+    _write_json(gold_path, gold)
+    regions_path = candidate_root / "core-03.regions.json"
+    regions = json.loads(regions_path.read_text(encoding="utf-8"))
+    regions["regions"][0]["leader"] = {
+        "status": "drawn",
+        "color": "dark_blue",
+        "width_points": 0.32,
+        "route": "orthogonal",
+        "arrow": False,
+    }
+    _write_json(regions_path, regions)
+    placement_path = candidate_root / "core-03.inline-placement.json"
+    placement = json.loads(placement_path.read_text(encoding="utf-8"))
+    placement["placements"][0]["leader"] = {"status": "drawn", "path": path}
+    _write_json(placement_path, placement)
+    _refresh_evidence_hash(
+        candidate_root, "regions_sha256", "core-03.regions.json"
+    )
+    _refresh_evidence_hash(
+        candidate_root,
+        "placement_sha256",
+        "core-03.inline-placement.json",
+    )
+    _refresh_evidence_hash(
+        candidate_root,
+        "locked_gold_sha256",
+        str(gold_path),
+    )
+
+
+def test_leader_crossing_gold_obstacle_hard_fails(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    _configure_drawn_leader(
+        workspace,
+        candidate_root,
+        [[100, 25], [120, 25], [120, 20]],
+    )
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert "leader_collision" in result["samples"][0]["hard_failure_ids"]
+
+
+def test_clean_orthogonal_leader_route_passes(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    _configure_drawn_leader(
+        workspace,
+        candidate_root,
+        [[100, 25], [100, 50], [130, 50], [130, 30]],
+    )
+
+    result = evaluate_workspace(workspace, candidate_root)
+
+    assert "leader_collision" not in result["samples"][0]["hard_failure_ids"]
+
+
+def test_malformed_diagonal_leader_path_is_rejected(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    _configure_drawn_leader(
+        workspace,
+        candidate_root,
+        [[100, 25], [130, 20]],
+    )
+
+    with pytest.raises(ValueError, match="orthogonal"):
+        evaluate_workspace(workspace, candidate_root)
+
+
 def test_malformed_baseline_preserves_existing_artifacts(tmp_path: Path) -> None:
     from services.engineering_drawing.benchmark.runner import evaluate_workspace
 
@@ -470,6 +710,38 @@ def test_malformed_baseline_preserves_existing_artifacts(tmp_path: Path) -> None
     assert old_comparison.read_bytes() == b"old comparison"
     assert old_report.read_bytes() == b"old report"
     assert not list(workspace.glob(".benchmark-*"))
+
+
+def test_generated_report_round_trips_as_next_baseline(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    evaluate_workspace(workspace, candidate_root)
+    baseline = workspace / "reports/benchmark-report.json"
+
+    result = evaluate_workspace(workspace, candidate_root, baseline)
+
+    assert result["promotion"]["promote"] is False
+    assert result["promotion"]["reasons"] == ["insufficient_core_gain"]
+
+
+def test_baseline_sample_universe_mismatch_is_rejected(tmp_path: Path) -> None:
+    from services.engineering_drawing.benchmark.runner import evaluate_workspace
+
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    evaluate_workspace(workspace, candidate_root)
+    baseline = workspace / "reports/benchmark-report.json"
+    payload = json.loads(baseline.read_text(encoding="utf-8"))
+    payload["samples"][0]["category"] = "other_category"
+    payload["category_scores"] = {"other_category": payload["core_score"]}
+    _write_json(baseline, payload)
+
+    with pytest.raises(ValueError, match="manifest universe"):
+        evaluate_workspace(workspace, candidate_root, baseline)
 
 
 def test_later_manifest_sample_failure_preserves_existing_artifacts(
@@ -540,6 +812,63 @@ def test_adjudication_refuses_to_overwrite_existing_gold(
         assert existing.read_bytes() == before
 
 
+def test_adjudication_rejects_prelabel_for_different_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    sample_dir = workspace / "samples/core-03"
+    (sample_dir / "gold.locked.json").unlink()
+    record = json.loads(
+        (sample_dir / "sample.json").read_text(encoding="utf-8")
+    )
+    page = {"width": 300, "height": 200, "rotation": 0}
+    _write_json(
+        sample_dir / "prelabel.json",
+        {"sample_id": "core-04", "page": page},
+    )
+    _write_json(
+        sample_dir / "prelabel.evidence.json",
+        {
+            "schema": "engineering-drawing-prelabel-evidence-v1",
+            "sample_id": "core-03",
+            "benchmark_version": "test-v1",
+            "manifest_record_sha256": canonical_digest(record),
+            "source_sha256": record["source_sha256"],
+            "preview_sha256": record["preview_sha256"],
+            "regions_sha256": "a" * 64,
+            "prelabel_sha256": hashlib.sha256(
+                (sample_dir / "prelabel.json").read_bytes()
+            ).hexdigest(),
+            "page": page,
+        },
+    )
+    decisions = tmp_path / "decisions.json"
+    _write_json(decisions, {"decisions": []})
+    monkeypatch.setattr(
+        engineering_cli,
+        "apply_adjudication",
+        lambda *_args: pytest.fail("identity mismatch must precede adjudication"),
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        main(
+            [
+                "benchmark-adjudicate",
+                "--workspace",
+                str(workspace),
+                "--sample-id",
+                "core-03",
+                "--decisions",
+                str(decisions),
+                "--decided-at",
+                "2026-07-28T10:00:00+08:00",
+            ]
+        )
+    assert not list(sample_dir.glob("gold.*.json"))
+
+
 def test_adjudication_publishes_once_then_refuses_different_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -548,10 +877,34 @@ def test_adjudication_publishes_once_then_refuses_different_decision(
     _seed_evaluation_tree(workspace, candidate_root)
     sample_dir = workspace / "samples/core-03"
     (sample_dir / "gold.locked.json").unlink()
-    _write_json(sample_dir / "prelabel.json", {"placeholder": True})
+    record = json.loads(
+        (sample_dir / "sample.json").read_text(encoding="utf-8")
+    )
+    page = {"width": 300, "height": 200, "rotation": 0}
+    _write_json(
+        sample_dir / "prelabel.json",
+        {"sample_id": "core-03", "page": page},
+    )
+    _write_json(
+        sample_dir / "prelabel.evidence.json",
+        {
+            "schema": "engineering-drawing-prelabel-evidence-v1",
+            "sample_id": "core-03",
+            "benchmark_version": "test-v1",
+            "manifest_record_sha256": canonical_digest(record),
+            "source_sha256": record["source_sha256"],
+            "preview_sha256": record["preview_sha256"],
+            "regions_sha256": "a" * 64,
+            "prelabel_sha256": hashlib.sha256(
+                (sample_dir / "prelabel.json").read_bytes()
+            ).hexdigest(),
+            "page": page,
+        },
+    )
     decisions = tmp_path / "decisions.json"
     _write_json(decisions, {"decisions": [{"value": "first"}]})
     fake_gold = SimpleNamespace(
+        sample_id="core-03",
         status="adjudicated",
         to_dict=lambda: {"schema": "test", "value": "first"},
     )
@@ -594,6 +947,67 @@ def test_adjudication_publishes_once_then_refuses_different_decision(
             ]
         )
     assert output.read_bytes() == before
+
+
+def test_adjudication_rejects_mismatched_final_gold_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "benchmark"
+    candidate_root = tmp_path / "candidate"
+    _seed_evaluation_tree(workspace, candidate_root)
+    sample_dir = workspace / "samples/core-03"
+    (sample_dir / "gold.locked.json").unlink()
+    record = json.loads(
+        (sample_dir / "sample.json").read_text(encoding="utf-8")
+    )
+    page = {"width": 300, "height": 200, "rotation": 0}
+    _write_json(
+        sample_dir / "prelabel.json",
+        {"sample_id": "core-03", "page": page},
+    )
+    _write_json(
+        sample_dir / "prelabel.evidence.json",
+        {
+            "schema": "engineering-drawing-prelabel-evidence-v1",
+            "sample_id": "core-03",
+            "benchmark_version": "test-v1",
+            "manifest_record_sha256": canonical_digest(record),
+            "source_sha256": record["source_sha256"],
+            "preview_sha256": record["preview_sha256"],
+            "regions_sha256": "a" * 64,
+            "prelabel_sha256": hashlib.sha256(
+                (sample_dir / "prelabel.json").read_bytes()
+            ).hexdigest(),
+            "page": page,
+        },
+    )
+    decisions = tmp_path / "decisions.json"
+    _write_json(decisions, {"decisions": []})
+    monkeypatch.setattr(
+        engineering_cli,
+        "apply_adjudication",
+        lambda *_args: SimpleNamespace(
+            sample_id="core-04",
+            status="adjudicated",
+            to_dict=lambda: {"sample_id": "core-04"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="gold identity"):
+        main(
+            [
+                "benchmark-adjudicate",
+                "--workspace",
+                str(workspace),
+                "--sample-id",
+                "core-03",
+                "--decisions",
+                str(decisions),
+                "--decided-at",
+                "2026-07-28T10:00:00+08:00",
+            ]
+        )
+    assert not list(sample_dir.glob("gold.*.json"))
 
 
 def test_prelabel_preflight_blocks_provider_on_tampered_sample_metadata(

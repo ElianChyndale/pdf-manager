@@ -255,6 +255,7 @@ def request_prelabels(
     base_url: str,
     request_fn: Callable[..., str],
 ) -> dict:
+    validated_regions = validate_source_regions(regions, page)
     content = request_fn(
         api_key=api_key,
         model=model,
@@ -262,7 +263,7 @@ def request_prelabels(
         messages=build_prelabel_request(
             sample_id=sample_id,
             image_data_url=image_data_url,
-            regions=regions,
+            regions=validated_regions,
         ),
         request_label="engineering-benchmark-prelabel",
         temperature=0.0,
@@ -271,10 +272,50 @@ def request_prelabels(
     return parse_prelabel_response(
         content,
         sample_id,
-        regions=regions,
+        regions=validated_regions,
         page=page,
         model=model,
     )
+
+
+def validate_source_regions(
+    regions: list[dict],
+    page: Mapping[str, float | int],
+) -> list[dict]:
+    """Fail closed on source-region identity, text, geometry, and page binding."""
+    page_rect = _page_rect(page)
+    if type(regions) is not list or not regions:
+        raise ValueError("source regions must be a non-empty list")
+    normalized = []
+    seen = set()
+    for index, raw in enumerate(regions):
+        if type(raw) is not dict:
+            raise ValueError(f"source region {index} must be an object")
+        raw_id = raw.get("id", raw.get("region_id"))
+        if not _nonempty_string(raw_id) or raw_id in seen:
+            raise ValueError("source region IDs must be non-empty and unique")
+        seen.add(raw_id)
+        text = raw.get("source_text", raw.get("text"))
+        if not _nonempty_string(text):
+            raise ValueError(f"source region {raw_id} text is invalid")
+        bbox = _rect(raw.get("bbox"), f"source region {raw_id} bbox")
+        if not (
+            page_rect[0] <= bbox[0]
+            and page_rect[1] <= bbox[1]
+            and page_rect[2] >= bbox[2]
+            and page_rect[3] >= bbox[3]
+        ):
+            raise ValueError(f"source region {raw_id} is outside the source page")
+        rotation = raw.get("rotation", 0)
+        if type(rotation) is not int or rotation not in {0, 90, 180, 270}:
+            raise ValueError(f"source region {raw_id} rotation is invalid")
+        if "page_index" in raw and raw["page_index"] != 0:
+            raise ValueError(f"source region {raw_id} page does not match frozen page")
+        item = dict(raw)
+        if "id" not in item:
+            item["id"] = raw_id
+        normalized.append(item)
+    return normalized
 
 
 def parse_visual_review_response(

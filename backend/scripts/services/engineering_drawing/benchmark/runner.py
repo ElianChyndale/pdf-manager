@@ -10,12 +10,13 @@ import stat
 import tempfile
 import uuid
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 import fitz
 
 from .prelabel import VISUAL_REVIEW_PROMPT_VERSION, VISUAL_REVIEW_SCHEMA
-from .report import render_comparison, write_benchmark_report
+from .report import _validated_summary, render_comparison, write_benchmark_report
 from .schema import GoldSample, validate_gold_sample
 from .scoring import promotion_decision, score_sample
 
@@ -58,11 +59,17 @@ _FINDING_KEYS = {"code", "region_id", "reason"}
 _EVIDENCE_KEYS = {
     "schema",
     "sample_id",
+    "benchmark_version",
+    "manifest_record_sha256",
+    "source_sha256",
+    "preview_sha256",
+    "locked_gold_sha256",
     "candidate_sha256",
     "regions_sha256",
     "placement_sha256",
     "subjective_sha256",
 }
+_ROTATIONS = {0, 90, 180, 270}
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -81,6 +88,17 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_digest(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
@@ -167,6 +185,12 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("manifest lock must use the canonical closed schema")
     if lock.get("production_output_touched") is not False:
         raise ValueError("manifest lock must preserve the production-output safety boundary")
+    if (
+        type(lock.get("benchmark_version")) is not str
+        or not lock["benchmark_version"].strip()
+        or len(lock["benchmark_version"]) > 128
+    ):
+        raise ValueError("manifest lock benchmark_version is invalid")
     records = lock.get("samples")
     if type(records) is not list or not records:
         raise ValueError("manifest lock samples must be a nonempty list")
@@ -182,8 +206,58 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(sample_id)
         if record.get("set_name") not in {"core", "challenge"}:
             raise ValueError("manifest lock set_name is invalid")
-        if type(record.get("category")) is not str or not record["category"].strip():
+        if not sample_id.startswith(f"{record['set_name']}-"):
+            raise ValueError("manifest lock sample_id does not match set_name")
+        if (
+            type(record.get("category")) is not str
+            or not record["category"].strip()
+            or record["category"] != record["category"].strip()
+            or len(record["category"]) > 256
+        ):
             raise ValueError("manifest lock category is invalid")
+        relative_pdf = record.get("relative_pdf")
+        if type(relative_pdf) is not str or not relative_pdf.strip() or "\\" in relative_pdf:
+            raise ValueError("manifest lock relative_pdf is invalid")
+        relative = PurePosixPath(relative_pdf)
+        if (
+            relative.is_absolute()
+            or relative.as_posix() != relative_pdf
+            or any(part in {"", ".", ".."} for part in relative.parts)
+            or relative.suffix.casefold() != ".pdf"
+        ):
+            raise ValueError("manifest lock relative_pdf is unsafe")
+        page_size = record.get("page_size")
+        if (
+            type(page_size) is not list
+            or len(page_size) != 2
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value <= 0
+                for value in page_size
+            )
+        ):
+            raise ValueError("manifest lock page_size is invalid")
+        if (
+            type(record.get("page_rotation")) is not int
+            or record["page_rotation"] not in _ROTATIONS
+        ):
+            raise ValueError("manifest lock page_rotation is invalid")
+        goals = record.get("goals")
+        if (
+            type(goals) is not list
+            or not goals
+            or len(goals) > 64
+            or any(
+                type(goal) is not str
+                or not goal.strip()
+                or goal != goal.strip()
+                or len(goal) > 128
+                for goal in goals
+            )
+        ):
+            raise ValueError("manifest lock goals are invalid")
         if (
             record.get("status") != "candidate"
             or type(record.get("page_number")) is not int
@@ -206,7 +280,7 @@ def _manifest_records(lock: dict[str, Any]) -> list[dict[str, Any]]:
         lock.get("core_sample_count"),
         lock.get("challenge_sample_count"),
     )
-    if actual != expected:
+    if any(type(value) is not int for value in actual) or actual != expected:
         raise ValueError("manifest lock sample counts are inconsistent")
     return records
 
@@ -216,9 +290,8 @@ def validated_sample_context(workspace: Path, sample_id: str) -> dict[str, Any]:
     if type(sample_id) is not str or _SAMPLE_ID.fullmatch(sample_id) is None:
         raise ValueError("benchmark sample_id is invalid")
     workspace_path = _regular_directory(workspace, "workspace")
-    records = _manifest_records(
-        _read_json(workspace_path / "manifest.lock.json", "manifest lock")
-    )
+    lock = _read_json(workspace_path / "manifest.lock.json", "manifest lock")
+    records = _manifest_records(lock)
     record = next(
         (item for item in records if item["sample_id"] == sample_id),
         None,
@@ -253,8 +326,25 @@ def validated_sample_context(workspace: Path, sample_id: str) -> dict[str, Any]:
         raise ValueError(
             f"{sample_id} preview hash does not match manifest lock"
         )
+    try:
+        with fitz.open(source_pdf) as document:
+            if document.page_count != 1:
+                raise ValueError(f"{sample_id} frozen source must be one page")
+            page = document[0]
+            actual_size = (float(page.rect.width), float(page.rect.height))
+            actual_rotation = page.rotation
+    except (fitz.FileDataError, RuntimeError) as error:
+        raise ValueError(f"{sample_id} frozen source PDF is invalid") from error
+    if any(
+        abs(actual - float(expected)) > 0.01
+        for actual, expected in zip(actual_size, record["page_size"], strict=True)
+    ):
+        raise ValueError(f"{sample_id} page_size does not match frozen PDF")
+    if actual_rotation != record["page_rotation"]:
+        raise ValueError(f"{sample_id} page_rotation does not match frozen PDF")
     return {
         "workspace": workspace_path,
+        "benchmark_version": lock["benchmark_version"],
         "record": record,
         "sample_dir": resolved_sample,
         "source_pdf": source_pdf,
@@ -314,9 +404,188 @@ def _intersects(left: tuple[float, ...], right: tuple[float, ...]) -> bool:
     ) > max(left[1], right[1])
 
 
+def _intersection_area(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    return max(0.0, min(left[2], right[2]) - max(left[0], right[0])) * max(
+        0.0, min(left[3], right[3]) - max(left[1], right[1])
+    )
+
+
+def _visible_translation_text(
+    page: fitz.Page,
+    translated_text: str,
+    target: tuple[float, float, float, float],
+) -> bool:
+    visible_chars = []
+    for span in page.get_texttrace():
+        color = span.get("color")
+        white = (
+            isinstance(color, int)
+            and color & 0xFFFFFF == 0xFFFFFF
+        ) or (
+            isinstance(color, (list, tuple))
+            and bool(color)
+            and all(float(component) >= 0.98 for component in color)
+        )
+        if (
+            span.get("type") == 3
+            or float(span.get("opacity", 1.0)) <= 0.01
+            or white
+        ):
+            continue
+        for raw in span.get("chars", ()):
+            if len(raw) < 4:
+                continue
+            codepoint = raw[0]
+            bbox = tuple(float(value) for value in raw[3])
+            area = max(0.0, bbox[2] - bbox[0]) * max(
+                0.0, bbox[3] - bbox[1]
+            )
+            if area <= 0 or _intersection_area(bbox, target) / area < 0.5:
+                continue
+            try:
+                visible_chars.append(chr(codepoint))
+            except (TypeError, ValueError):
+                continue
+    return _fold_text(translated_text) in _fold_text("".join(visible_chars))
+
+
+def _region_raster_signal(
+    source_page: fitz.Page,
+    candidate_page: fitz.Page,
+    target: tuple[float, float, float, float],
+) -> bool:
+    matrix = fitz.Matrix(2, 2)
+    source = source_page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csGRAY)
+    candidate = candidate_page.get_pixmap(
+        matrix=matrix, alpha=False, colorspace=fitz.csGRAY
+    )
+    if source.width != candidate.width or source.height != candidate.height:
+        return False
+    x0 = max(0, min(source.width, math.floor(target[0] * 2)))
+    y0 = max(0, min(source.height, math.floor(target[1] * 2)))
+    x1 = max(0, min(source.width, math.ceil(target[2] * 2)))
+    y1 = max(0, min(source.height, math.ceil(target[3] * 2)))
+    if x1 <= x0 or y1 <= y0:
+        return False
+    source_bytes = source.samples
+    candidate_bytes = candidate.samples
+    changed = 0
+    for y in range(y0, y1):
+        row = y * source.stride
+        for x in range(x0, x1):
+            offset = row + x
+            if abs(source_bytes[offset] - candidate_bytes[offset]) >= 12:
+                changed += 1
+    return changed >= max(3, math.ceil((x1 - x0) * (y1 - y0) * 0.002))
+
+
+def _point_in_rect(point: tuple[float, float], rect: tuple[float, ...]) -> bool:
+    return rect[0] <= point[0] <= rect[2] and rect[1] <= point[1] <= rect[3]
+
+
+def _segment_hits_rect(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    rect: tuple[float, ...],
+) -> bool:
+    if start[0] == end[0]:
+        return rect[0] <= start[0] <= rect[2] and max(
+            min(start[1], end[1]), rect[1]
+        ) <= min(max(start[1], end[1]), rect[3])
+    return rect[1] <= start[1] <= rect[3] and max(
+        min(start[0], end[0]), rect[0]
+    ) <= min(max(start[0], end[0]), rect[2])
+
+
+def _segments_cross(
+    left: tuple[tuple[float, float], tuple[float, float]],
+    right: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    (ax, ay), (bx, by) = left
+    (cx, cy), (dx, dy) = right
+    left_vertical = ax == bx
+    right_vertical = cx == dx
+    if left_vertical and right_vertical:
+        return ax == cx and max(min(ay, by), min(cy, dy)) <= min(
+            max(ay, by), max(cy, dy)
+        )
+    if not left_vertical and not right_vertical:
+        return ay == cy and max(min(ax, bx), min(cx, dx)) <= min(
+            max(ax, bx), max(cx, dx)
+        )
+    vertical = left if left_vertical else right
+    horizontal = right if left_vertical else left
+    vx = vertical[0][0]
+    hy = horizontal[0][1]
+    return (
+        min(vertical[0][1], vertical[1][1])
+        <= hy
+        <= max(vertical[0][1], vertical[1][1])
+        and min(horizontal[0][0], horizontal[1][0])
+        <= vx
+        <= max(horizontal[0][0], horizontal[1][0])
+    )
+
+
+def _leader_segments(
+    leader: object,
+    *,
+    page: tuple[float, float, float, float],
+    source: tuple[float, ...],
+    target: tuple[float, ...],
+    label: str,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if type(leader) is not dict or set(leader) != {"status", "path"}:
+        raise ValueError(f"{label} leader must use the closed placement schema")
+    status = leader["status"]
+    path = leader["path"]
+    if status == "not_needed":
+        if path != []:
+            raise ValueError(f"{label} unused leader path must be empty")
+        return []
+    if status != "drawn" or type(path) is not list or len(path) < 2:
+        raise ValueError(f"{label} drawn leader requires a path")
+    points = []
+    for raw in path:
+        if (
+            type(raw) is not list
+            or len(raw) != 2
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in raw
+            )
+        ):
+            raise ValueError(f"{label} leader path point is invalid")
+        point = (float(raw[0]), float(raw[1]))
+        if not _point_in_rect(point, page):
+            raise ValueError(f"{label} leader path leaves the page")
+        points.append(point)
+    if not (
+        (_point_in_rect(points[0], source) and _point_in_rect(points[-1], target))
+        or (
+            _point_in_rect(points[-1], source)
+            and _point_in_rect(points[0], target)
+        )
+    ):
+        raise ValueError(f"{label} leader endpoints must bind source and target")
+    segments = []
+    for start, end in zip(points, points[1:]):
+        if start == end or (start[0] != end[0] and start[1] != end[1]):
+            raise ValueError(f"{label} leader path must be nonzero orthogonal segments")
+        segments.append((start, end))
+    return segments
+
+
 def _bound_visual_evidence(
     *,
     sample_id: str,
+    benchmark_version: str,
+    record: dict[str, Any],
+    source_pdf: Path,
+    source_png: Path,
+    locked_gold_path: Path,
     candidate_pdf: Path,
     regions_path: Path,
     placement_path: Path,
@@ -330,6 +599,11 @@ def _bound_visual_evidence(
     ):
         raise ValueError(f"{sample_id} candidate evidence is invalid")
     expected = {
+        "benchmark_version": benchmark_version,
+        "manifest_record_sha256": canonical_digest(record),
+        "source_sha256": sha256_file(source_pdf),
+        "preview_sha256": sha256_file(source_png),
+        "locked_gold_sha256": sha256_file(locked_gold_path),
         "candidate_sha256": sha256_file(candidate_pdf),
         "regions_sha256": sha256_file(regions_path),
         "placement_sha256": sha256_file(placement_path),
@@ -397,7 +671,26 @@ def _candidate_visual_qa(
                 raise ValueError("benchmark frozen and candidate PDFs must be one page")
             candidate_document[0].get_pixmap(dpi=72, alpha=False)
             source_document[0].get_pixmap(dpi=72, alpha=False)
-            candidate_text = _fold_text(candidate_document[0].get_text())
+            actual_size = (
+                candidate_document[0].rect.width,
+                candidate_document[0].rect.height,
+            )
+            target_by_id = dict(target_rects)
+            visible_presence = {
+                region_id: (
+                    _visible_translation_text(
+                        candidate_document[0],
+                        str(candidate["translated_text"]),
+                        target_by_id[region_id],
+                    )
+                    and _region_raster_signal(
+                        source_document[0],
+                        candidate_document[0],
+                        target_by_id[region_id],
+                    )
+                )
+                for region_id, candidate in candidate_by_id.items()
+            }
     except (fitz.FileDataError, RuntimeError) as error:
         raise ValueError("benchmark candidate must be a renderable PDF") from error
 
@@ -407,7 +700,7 @@ def _candidate_visual_qa(
         placement = placement_by_id[region_id]
         if (
             not translated
-            or translated not in candidate_text
+            or not visible_presence[region_id]
             or str(placement.get("status", "")).startswith("rejected")
             or placement.get("coverage_status") in {"missing", "low_confidence"}
         ):
@@ -417,36 +710,116 @@ def _candidate_visual_qa(
         for other_id, other_rect in target_rects[index + 1 :]:
             if _intersects(rect, other_rect):
                 overlap_ids.update((region_id, other_id))
+    page_rect = (0.0, 0.0, float(actual_size[0]), float(actual_size[1]))
+    leader_segments: dict[
+        str, list[tuple[tuple[float, float], tuple[float, float]]]
+    ] = {}
+    for region_id, placement in placement_by_id.items():
+        leader_segments[region_id] = _leader_segments(
+            placement.get("leader"),
+            page=page_rect,
+            source=_rect_value(gold_by_id[region_id]["source_bbox"], "source_bbox"),
+            target=dict(target_rects)[region_id],
+            label=region_id,
+        )
+    obstacles = [
+        (
+            block_id,
+            _rect_value(block["source_bbox"], "source_bbox"),
+            "source",
+        )
+        for block_id, block in gold_by_id.items()
+    ]
+    obstacles.extend(
+        (
+            block_id,
+            _rect_value(rect, "forbidden_zone"),
+            "forbidden",
+        )
+        for block_id, block in gold_by_id.items()
+        for rect in block["forbidden_zones"]
+    )
+    leader_collision_ids = set()
+    for region_id, segments in leader_segments.items():
+        own_source = _rect_value(
+            gold_by_id[region_id]["source_bbox"], "source_bbox"
+        )
+        for segment in segments:
+            for owner, obstacle, kind in obstacles:
+                if owner == region_id and (
+                    kind == "source" or obstacle == own_source
+                ):
+                    continue
+                if _segment_hits_rect(*segment, obstacle):
+                    leader_collision_ids.add(region_id)
+    flattened = [
+        (region_id, segment)
+        for region_id, segments in leader_segments.items()
+        for segment in segments
+    ]
+    for index, (region_id, segment) in enumerate(flattened):
+        for other_id, other_segment in flattened[index + 1 :]:
+            if region_id != other_id and _segments_cross(segment, other_segment):
+                leader_collision_ids.update((region_id, other_id))
     return {
         "visual_overlap_count": len(overlap_ids),
-        "leader_collision_count": 0,
+        "leader_collision_count": len(leader_collision_ids),
         "untranslated_candidate_count": len(missing_region_ids),
         "missing_region_ids": sorted(missing_region_ids),
     }
 
 
-def _baseline_summary(path: Path) -> dict[str, Any]:
-    value = _read_json(Path(path), "baseline report")
-    required = {
-        "schema",
-        "samples",
-        "core_score",
-        "hard_failure_count",
-        "manual_review_rate",
-        "automation_rate",
-        "category_scores",
-        "challenge_pass_rate",
-        "challenge_sample_count",
+def _promotion_snapshot(value: dict[str, Any]) -> dict[str, Any]:
+    identities = sorted(
+        f"{sample['sample_id']}/{identity}"
+        for sample in value["samples"]
+        for identity in sample["hard_failure_ids"]
+    )
+    return {
+        "core_score": value["core_score"],
+        "hard_failure_count": len(identities),
+        "hard_failure_ids": identities,
+        "manual_review_rate": value["manual_review_rate"],
+        "category_scores": value["category_scores"],
+        "challenge_pass_rate": value["challenge_pass_rate"],
     }
-    keys = set(value)
-    if keys != required and keys != {*required, "promotion"}:
-        raise ValueError("baseline report must use the canonical report schema")
-    if value.get("schema") != "engineering-drawing-benchmark-report-v1":
-        raise ValueError("baseline report schema is invalid")
-    decision = promotion_decision(value, value)
+
+
+def _sample_universe(value: dict[str, Any]) -> list[tuple[str, str, str]]:
+    return sorted(
+        (
+            sample["sample_id"],
+            sample["set_name"],
+            sample["category"],
+        )
+        for sample in value["samples"]
+    )
+
+
+def _baseline_summary(
+    path: Path,
+    *,
+    benchmark_version: str,
+    manifest_digest: str,
+    universe: list[tuple[str, str, str]],
+) -> dict[str, Any]:
+    value = _read_json(Path(path), "baseline report")
+    baseline_workspace = Path(path).resolve(strict=True).parent.parent
+    try:
+        _validated_summary(value, baseline_workspace)
+    except ValueError as error:
+        raise ValueError("baseline report is invalid") from error
+    if (
+        value.get("benchmark_version") != benchmark_version
+        or value.get("manifest_digest") != manifest_digest
+        or _sample_universe(value) != universe
+    ):
+        raise ValueError("baseline report does not match the current manifest universe")
+    snapshot = _promotion_snapshot(value)
+    decision = promotion_decision(snapshot, snapshot)
     if any(reason.startswith("invalid_") for reason in decision["reasons"]):
         raise ValueError("baseline report contains invalid promotion evidence")
-    return value
+    return snapshot
 
 
 def _artifact_target(workspace: Path, name: str) -> Path:
@@ -497,8 +870,11 @@ def _preflight(workspace: Path, candidate_root: Path) -> list[dict[str, Any]]:
         context = validated_sample_context(workspace, sample_id)
         resolved_sample = context["sample_dir"]
         source_pdf = context["source_pdf"]
+        locked_gold_path = _child(
+            resolved_sample, "gold.locked.json", f"{sample_id} locked gold"
+        )
         gold_payload = _read_json(
-            _child(resolved_sample, "gold.locked.json", f"{sample_id} locked gold"),
+            locked_gold_path,
             f"{sample_id} locked gold",
         )
         try:
@@ -555,6 +931,11 @@ def _preflight(workspace: Path, candidate_root: Path) -> list[dict[str, Any]]:
         )
         _bound_visual_evidence(
             sample_id=sample_id,
+            benchmark_version=context["benchmark_version"],
+            record=record,
+            source_pdf=source_pdf,
+            source_png=context["source_png"],
+            locked_gold_path=locked_gold_path,
             candidate_pdf=candidate_pdf,
             regions_path=regions_path,
             placement_path=placement_path,
@@ -597,8 +978,24 @@ def evaluate_workspace(
     """Evaluate frozen candidates without writing any translated delivery PDF."""
     workspace_path = _regular_directory(workspace, "workspace")
     candidate_path = _regular_directory(candidate_root, "candidate_root")
+    lock = _read_json(workspace_path / "manifest.lock.json", "manifest lock")
+    records = _manifest_records(lock)
+    manifest_digest = canonical_digest(lock)
+    universe = sorted(
+        (
+            record["sample_id"],
+            record["set_name"],
+            record["category"],
+        )
+        for record in records
+    )
     baseline = (
-        _baseline_summary(Path(baseline_report))
+        _baseline_summary(
+            Path(baseline_report),
+            benchmark_version=lock["benchmark_version"],
+            manifest_digest=manifest_digest,
+            universe=universe,
+        )
         if baseline_report is not None
         else None
     )
@@ -653,6 +1050,8 @@ def evaluate_workspace(
     block_count = max(1, len(all_gold_blocks))
     summary: dict[str, Any] = {
         "schema": "engineering-drawing-benchmark-report-v1",
+        "benchmark_version": lock["benchmark_version"],
+        "manifest_digest": manifest_digest,
         "samples": samples,
         "core_score": sum(item["score"] for item in core_items)
         / max(1, len(core_items)),
@@ -674,7 +1073,9 @@ def evaluate_workspace(
         "challenge_sample_count": len(challenge_items),
     }
     if baseline is not None:
-        summary["promotion"] = promotion_decision(baseline, summary)
+        summary["promotion"] = promotion_decision(
+            baseline, _promotion_snapshot(summary)
+        )
 
     staging = Path(
         tempfile.mkdtemp(prefix=".benchmark-evaluate-", dir=workspace_path)

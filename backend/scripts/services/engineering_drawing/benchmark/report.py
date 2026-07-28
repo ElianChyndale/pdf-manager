@@ -39,6 +39,12 @@ _FULL_SUMMARY_KEYS = {
     "challenge_sample_count",
 }
 _FULL_SUMMARY_WITH_PROMOTION_KEYS = {*_FULL_SUMMARY_KEYS, "promotion"}
+_BOUND_SUMMARY_KEYS = {
+    *_FULL_SUMMARY_KEYS,
+    "benchmark_version",
+    "manifest_digest",
+}
+_BOUND_SUMMARY_WITH_PROMOTION_KEYS = {*_BOUND_SUMMARY_KEYS, "promotion"}
 _LEGACY_SAMPLE_KEYS = {
     "sample_id",
     "category",
@@ -486,6 +492,8 @@ def _validated_summary(summary: object, workspace: Path) -> tuple[dict, list[dic
         keys != _LEGACY_SUMMARY_KEYS
         and keys != _FULL_SUMMARY_KEYS
         and keys != _FULL_SUMMARY_WITH_PROMOTION_KEYS
+        and keys != _BOUND_SUMMARY_KEYS
+        and keys != _BOUND_SUMMARY_WITH_PROMOTION_KEYS
     ):
         raise ValueError("summary must use a closed report schema")
     _finite_number(summary["core_score"], "core_score", 0.0, 100.0)
@@ -493,6 +501,17 @@ def _validated_summary(summary: object, workspace: Path) -> tuple[dict, list[dic
     if type(samples) is not list or len(samples) > _MAX_SAMPLES:
         raise ValueError("samples must be a bounded list")
     full_contract = keys != _LEGACY_SUMMARY_KEYS
+    if keys == _BOUND_SUMMARY_KEYS or keys == _BOUND_SUMMARY_WITH_PROMOTION_KEYS:
+        _bounded_string(
+            summary["benchmark_version"], "benchmark_version", _MAX_CODE_LENGTH
+        )
+        manifest_digest = _bounded_string(
+            summary["manifest_digest"], "manifest_digest", 64
+        )
+        if len(manifest_digest) != 64 or any(
+            char not in "0123456789abcdef" for char in manifest_digest
+        ):
+            raise ValueError("manifest_digest must be a lowercase SHA-256")
     normalized_samples: list[dict] = []
     full_samples: list[dict] = []
     sample_ids = set()

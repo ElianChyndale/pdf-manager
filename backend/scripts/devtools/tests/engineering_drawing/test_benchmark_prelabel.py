@@ -528,3 +528,32 @@ def test_request_visual_review_uses_known_candidate_ids_and_deterministic_transp
         "data:image/png;base64,candidate",
     ]
     assert result["model"] == "test-model"
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        [
+            {"id": "dup", "text": "A", "bbox": [1, 1, 10, 10], "rotation": 0},
+            {"id": "dup", "text": "B", "bbox": [20, 1, 30, 10], "rotation": 0},
+        ],
+        [{"id": "bad", "text": "A", "bbox": [1, 1, float("nan"), 10], "rotation": 0}],
+        [{"id": "outside", "text": "A", "bbox": [390, 1, 410, 10], "rotation": 0}],
+        [{"id": "wrong-page", "text": "A", "bbox": [1, 1, 10, 10], "rotation": 0, "page_index": 1}],
+    ],
+)
+def test_request_prelabels_rejects_invalid_source_before_provider(regions):
+    def provider(**_kwargs):
+        pytest.fail("provider must not run before source-region validation")
+
+    with pytest.raises(ValueError):
+        request_prelabels(
+            sample_id="core-03",
+            image_data_url="data:image/png;base64,test",
+            regions=regions,
+            page=PAGE,
+            api_key="test",
+            model="test",
+            base_url="https://example.test/v1",
+            request_fn=provider,
+        )

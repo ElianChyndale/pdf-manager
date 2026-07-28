@@ -83,11 +83,16 @@ Lifecycle:
 5. `benchmark-visual-review` records the Sol model, prompt version, page-layout
    score, readability score, and auditable findings for each candidate page.
    It atomically publishes a companion `*.evidence.json` containing SHA-256
-   bindings for the candidate PDF, regions, placement audit, and review.
+   bindings for the benchmark version, canonical manifest record, frozen
+   source and preview, locked gold, candidate PDF, regions, placement audit,
+   and review.
 6. `benchmark-evaluate` applies hard gates, weighted scoring, visual
    comparisons, and version-promotion rules. Evaluation rejects stale or
    structurally inconsistent evidence and transactionally replaces the report
    and comparison trees only after every sample is validated and rendered.
+   A generated `benchmark-report.json` can be supplied as the next
+   `--baseline-report`; promotion is accepted only when its manifest digest and
+   complete sample/set/category/challenge universe match.
 
 The seed command creates only frozen benchmark inputs:
 

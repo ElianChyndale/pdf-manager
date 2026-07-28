@@ -19,8 +19,10 @@ from .benchmark.prelabel import (
     request_prelabels,
     request_visual_review,
     select_adjudication_queue,
+    validate_source_regions,
 )
 from .benchmark.runner import _candidate_visual_qa
+from .benchmark.runner import canonical_digest
 from .benchmark.runner import evaluate_workspace
 from .benchmark.runner import sha256_file
 from .benchmark.runner import validated_sample_context
@@ -217,9 +219,13 @@ def main(argv: list[str] | None = None) -> int:
         sample_dir = context["sample_dir"]
         prelabel_path = sample_dir / "prelabel.json"
         queue_path = sample_dir / "adjudication-queue.json"
+        prelabel_evidence_path = sample_dir / "prelabel.evidence.json"
         if list(sample_dir.glob("gold.*.json")):
             raise FileExistsError("benchmark prelabel cannot follow a gold artifact")
-        if any(path.exists() or path.is_symlink() for path in (prelabel_path, queue_path)):
+        if any(
+            path.exists() or path.is_symlink()
+            for path in (prelabel_path, queue_path, prelabel_evidence_path)
+        ):
             raise FileExistsError("benchmark prelabel outputs already exist")
         if args.regions_json.is_symlink() or not args.regions_json.is_file():
             raise ValueError("benchmark regions must be a regular JSON file")
@@ -230,15 +236,17 @@ def main(argv: list[str] | None = None) -> int:
             "regions"
         ]
         sample_record = context["record"]
+        page = {
+            "width": sample_record["page_size"][0],
+            "height": sample_record["page_size"][1],
+            "rotation": sample_record["page_rotation"],
+        }
+        validated_regions = validate_source_regions(regions, page)
         result = request_prelabels(
             sample_id=args.sample_id,
             image_data_url=image_data_url,
-            regions=regions,
-            page={
-                "width": sample_record["page_size"][0],
-                "height": sample_record["page_size"][1],
-                "rotation": sample_record["page_rotation"],
-            },
+            regions=validated_regions,
+            page=page,
             api_key=get_api_key(),
             model=args.model,
             base_url=args.base_url,
@@ -251,6 +259,22 @@ def main(argv: list[str] | None = None) -> int:
                     queue_path,
                     {"items": select_adjudication_queue(result)},
                 ),
+                (
+                    prelabel_evidence_path,
+                    {
+                        "schema": "engineering-drawing-prelabel-evidence-v1",
+                        "sample_id": args.sample_id,
+                        "benchmark_version": context["benchmark_version"],
+                        "manifest_record_sha256": canonical_digest(sample_record),
+                        "source_sha256": sha256_file(context["source_pdf"]),
+                        "preview_sha256": sha256_file(context["source_png"]),
+                        "regions_sha256": sha256_file(args.regions_json),
+                        "prelabel_sha256": hashlib.sha256(
+                            _json_bytes(result)
+                        ).hexdigest(),
+                        "page": page,
+                    },
+                ),
             ]
         )
         return 0
@@ -262,6 +286,41 @@ def main(argv: list[str] | None = None) -> int:
         prelabel = json.loads(
             (sample_dir / "prelabel.json").read_text(encoding="utf-8")
         )
+        prelabel_evidence_path = sample_dir / "prelabel.evidence.json"
+        if prelabel_evidence_path.is_symlink() or not prelabel_evidence_path.is_file():
+            raise ValueError("benchmark adjudication requires prelabel provenance")
+        prelabel_evidence = json.loads(
+            prelabel_evidence_path.read_text(encoding="utf-8")
+        )
+        expected_prelabel_evidence = {
+            "schema": "engineering-drawing-prelabel-evidence-v1",
+            "sample_id": args.sample_id,
+            "benchmark_version": context["benchmark_version"],
+            "manifest_record_sha256": canonical_digest(context["record"]),
+            "source_sha256": sha256_file(context["source_pdf"]),
+            "preview_sha256": sha256_file(context["source_png"]),
+            "prelabel_sha256": sha256_file(sample_dir / "prelabel.json"),
+        }
+        if set(prelabel_evidence) != {
+            *expected_prelabel_evidence,
+            "regions_sha256",
+            "page",
+        } or any(
+            prelabel_evidence.get(key) != value
+            for key, value in expected_prelabel_evidence.items()
+        ):
+            raise ValueError("benchmark prelabel provenance does not match manifest sample")
+        if (
+            type(prelabel_evidence["regions_sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", prelabel_evidence["regions_sha256"])
+            is None
+        ):
+            raise ValueError("benchmark prelabel source-region provenance is invalid")
+        if (
+            prelabel.get("sample_id") != args.sample_id
+            or prelabel.get("page") != prelabel_evidence.get("page")
+        ):
+            raise ValueError("benchmark prelabel identity does not match requested sample")
         decisions = json.loads(args.decisions.read_text(encoding="utf-8"))[
             "decisions"
         ]
@@ -270,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.lock:
             gold = lock_gold(gold, args.actor, args.decided_at)
+        if gold.sample_id != args.sample_id:
+            raise ValueError("adjudicated gold identity does not match requested sample")
         output_name = (
             "gold.locked.json"
             if gold.status == "locked"
@@ -356,6 +417,11 @@ def main(argv: list[str] | None = None) -> int:
         evidence = {
             "schema": "engineering-drawing-candidate-evidence-v1",
             "sample_id": args.sample_id,
+            "benchmark_version": context["benchmark_version"],
+            "manifest_record_sha256": canonical_digest(context["record"]),
+            "source_sha256": sha256_file(context["source_pdf"]),
+            "preview_sha256": sha256_file(context["source_png"]),
+            "locked_gold_sha256": sha256_file(locked_path),
             "candidate_sha256": sha256_file(candidate_pdf),
             "regions_sha256": sha256_file(regions_path),
             "placement_sha256": sha256_file(placement_path),
