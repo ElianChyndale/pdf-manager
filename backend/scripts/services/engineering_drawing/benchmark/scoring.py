@@ -24,6 +24,17 @@ _MANUAL_FALLBACK_STATUSES = {
     "legacy_fallback",
     "manual_review_fallback",
 }
+_VISUAL_QA_COUNTERS = (
+    "visual_overlap_count",
+    "leader_collision_count",
+    "untranslated_candidate_count",
+)
+_PDF_DIAGNOSTIC_COUNTERS = (
+    "replacement_characters",
+    "private_use_characters",
+    "clipped_or_outside_count",
+)
+_MAX_COUNTER = (1 << 63) - 1
 _PROMOTION_REQUIRED_FIELDS = {
     "core_score",
     "hard_failure_count",
@@ -31,11 +42,6 @@ _PROMOTION_REQUIRED_FIELDS = {
     "category_scores",
     "challenge_pass_rate",
 }
-# Aggregate scores are decimal metrics. Differences within one billionth are
-# treated as representation noise only for the exact-zero promotion branch.
-_ZERO_GAIN_ABS_TOLERANCE = 1e-9
-
-
 def _fold(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()
 
@@ -45,15 +51,24 @@ def _nonempty_string(value: object) -> bool:
 
 
 def _number(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 def _bounded_number(value: object, minimum: float, maximum: float) -> bool:
     return _number(value) and minimum <= value <= maximum
+
+
+def _counter(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_COUNTER
+    )
 
 
 def _rotation(value: object) -> bool:
@@ -289,6 +304,36 @@ def _subjective_dimension(
         )
         return 0.0
     return float(value)
+
+
+def _validated_counter_evidence(
+    value: object,
+    *,
+    required_counters: tuple[str, ...],
+    failure_code: str,
+    failures: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    if not isinstance(value, dict):
+        _add_failure(
+            failures,
+            failure_code,
+            fields=["container"],
+        )
+        return {}
+    valid: dict[str, int] = {}
+    invalid_fields = []
+    for field in required_counters:
+        if field not in value or not _counter(value[field]):
+            invalid_fields.append(field)
+            continue
+        valid[field] = value[field]
+    if invalid_fields:
+        _add_failure(
+            failures,
+            failure_code,
+            fields=invalid_fields,
+        )
+    return valid
 
 
 def score_sample(
@@ -543,20 +588,31 @@ def score_sample(
                 block_id=block_id,
             )
 
-    if isinstance(pdf_diagnostics, dict):
-        if pdf_diagnostics.get("replacement_characters") or pdf_diagnostics.get(
-            "private_use_characters"
-        ):
-            _add_failure(failures, "garbled_text")
-        if pdf_diagnostics.get("clipped_or_outside_count"):
-            _add_failure(failures, "clipped_or_outside")
-    if isinstance(visual_qa, dict):
-        if visual_qa.get("visual_overlap_count"):
-            _add_failure(failures, "source_or_translation_overlap")
-        if visual_qa.get("leader_collision_count"):
-            _add_failure(failures, "leader_collision")
-        if visual_qa.get("untranslated_candidate_count"):
-            _add_failure(failures, "untranslated_candidate")
+    pdf_counts = _validated_counter_evidence(
+        pdf_diagnostics,
+        required_counters=_PDF_DIAGNOSTIC_COUNTERS,
+        failure_code="invalid_pdf_diagnostics",
+        failures=failures,
+    )
+    if pdf_counts.get("replacement_characters", 0) > 0 or pdf_counts.get(
+        "private_use_characters", 0
+    ) > 0:
+        _add_failure(failures, "garbled_text")
+    if pdf_counts.get("clipped_or_outside_count", 0) > 0:
+        _add_failure(failures, "clipped_or_outside")
+
+    visual_counts = _validated_counter_evidence(
+        visual_qa,
+        required_counters=_VISUAL_QA_COUNTERS,
+        failure_code="invalid_visual_qa",
+        failures=failures,
+    )
+    if visual_counts.get("visual_overlap_count", 0) > 0:
+        _add_failure(failures, "source_or_translation_overlap")
+    if visual_counts.get("leader_collision_count", 0) > 0:
+        _add_failure(failures, "leader_collision")
+    if visual_counts.get("untranslated_candidate_count", 0) > 0:
+        _add_failure(failures, "untranslated_candidate")
 
     layout_points = _subjective_dimension(
         subjective,
@@ -797,14 +853,8 @@ def promotion_decision(current: dict, candidate: dict) -> dict:
         _append_reason(reasons, "new_hard_failures")
 
     assert score_gain is not None
-    exact_zero_gain = math.isclose(
-        score_gain,
-        0.0,
-        rel_tol=0.0,
-        abs_tol=_ZERO_GAIN_ABS_TOLERANCE,
-    )
     has_required_gain = score_gain >= 1.0
-    equal_with_lower_review = exact_zero_gain and (
+    equal_with_lower_review = score_gain == 0.0 and (
         candidate_value["manual_review_rate"]
         < current_value["manual_review_rate"]
     )

@@ -8,6 +8,8 @@ from services.engineering_drawing.benchmark.scoring import (
     score_sample,
 )
 
+_DEFAULT = object()
+
 
 def _leader_rule(*, allowed: bool = False, required: bool = False) -> dict:
     return {
@@ -55,8 +57,8 @@ def _score(
     *,
     gold_blocks: list[dict] | None = None,
     candidate_blocks: list[dict] | None = None,
-    visual_qa: dict | None = None,
-    pdf_diagnostics: dict | None = None,
+    visual_qa: object = _DEFAULT,
+    pdf_diagnostics: object = _DEFAULT,
     subjective: dict | None = None,
 ) -> dict:
     return score_sample(
@@ -69,14 +71,14 @@ def _score(
             "leader_collision_count": 0,
             "untranslated_candidate_count": 0,
         }
-        if visual_qa is None
+        if visual_qa is _DEFAULT
         else visual_qa,
         pdf_diagnostics={
             "replacement_characters": 0,
             "private_use_characters": 0,
             "clipped_or_outside_count": 0,
         }
-        if pdf_diagnostics is None
+        if pdf_diagnostics is _DEFAULT
         else pdf_diagnostics,
         subjective={"page_readability": 15, "layout_association": 20}
         if subjective is None
@@ -281,6 +283,146 @@ def test_visual_and_pdf_hard_gates(visual, diagnostics, expected):
     assert expected in {item["code"] for item in result["hard_failures"]}
 
 
+@pytest.mark.parametrize(
+    ("argument", "evidence", "expected_id"),
+    [
+        ("visual_qa", None, "invalid_visual_qa"),
+        ("visual_qa", [], "invalid_visual_qa"),
+        (
+            "visual_qa",
+            {"visual_overlap_count": 0, "leader_collision_count": 0},
+            "invalid_visual_qa",
+        ),
+        (
+            "visual_qa",
+            {
+                "visual_overlap_count": "0",
+                "leader_collision_count": 0,
+                "untranslated_candidate_count": 0,
+            },
+            "invalid_visual_qa",
+        ),
+        (
+            "visual_qa",
+            {
+                "visual_overlap_count": False,
+                "leader_collision_count": 0,
+                "untranslated_candidate_count": 0,
+            },
+            "invalid_visual_qa",
+        ),
+        (
+            "visual_qa",
+            {
+                "visual_overlap_count": math.nan,
+                "leader_collision_count": 0,
+                "untranslated_candidate_count": 0,
+            },
+            "invalid_visual_qa",
+        ),
+        (
+            "visual_qa",
+            {
+                "visual_overlap_count": -1,
+                "leader_collision_count": 0,
+                "untranslated_candidate_count": 0,
+            },
+            "invalid_visual_qa",
+        ),
+        (
+            "visual_qa",
+            {
+                "visual_overlap_count": 10**1000,
+                "leader_collision_count": 0,
+                "untranslated_candidate_count": 0,
+            },
+            "invalid_visual_qa",
+        ),
+        ("pdf_diagnostics", None, "invalid_pdf_diagnostics"),
+        ("pdf_diagnostics", [], "invalid_pdf_diagnostics"),
+        (
+            "pdf_diagnostics",
+            {"replacement_characters": 0, "private_use_characters": 0},
+            "invalid_pdf_diagnostics",
+        ),
+        (
+            "pdf_diagnostics",
+            {
+                "replacement_characters": "0",
+                "private_use_characters": 0,
+                "clipped_or_outside_count": 0,
+            },
+            "invalid_pdf_diagnostics",
+        ),
+        (
+            "pdf_diagnostics",
+            {
+                "replacement_characters": True,
+                "private_use_characters": 0,
+                "clipped_or_outside_count": 0,
+            },
+            "invalid_pdf_diagnostics",
+        ),
+        (
+            "pdf_diagnostics",
+            {
+                "replacement_characters": math.nan,
+                "private_use_characters": 0,
+                "clipped_or_outside_count": 0,
+            },
+            "invalid_pdf_diagnostics",
+        ),
+        (
+            "pdf_diagnostics",
+            {
+                "replacement_characters": -1,
+                "private_use_characters": 0,
+                "clipped_or_outside_count": 0,
+            },
+            "invalid_pdf_diagnostics",
+        ),
+        (
+            "pdf_diagnostics",
+            {
+                "replacement_characters": 10**1000,
+                "private_use_characters": 0,
+                "clipped_or_outside_count": 0,
+            },
+            "invalid_pdf_diagnostics",
+        ),
+    ],
+)
+def test_visual_and_pdf_evidence_requires_nonnegative_natural_counters(
+    argument,
+    evidence,
+    expected_id,
+):
+    result = _score(**{argument: evidence})
+
+    assert result["passed"] is False
+    assert expected_id in result["hard_failure_ids"]
+
+
+def test_valid_zero_counter_evidence_passes_with_additional_audit_details():
+    result = _score(
+        visual_qa={
+            "visual_overlap_count": 0,
+            "leader_collision_count": 0,
+            "untranslated_candidate_count": 0,
+            "manual_review_count": 0,
+            "passed": True,
+        },
+        pdf_diagnostics={
+            "replacement_characters": 0,
+            "private_use_characters": 0,
+            "clipped_or_outside_count": 0,
+            "page_count": 1,
+        },
+    )
+
+    assert result["passed"] is True
+
+
 @pytest.mark.parametrize("value", [True, "15", math.nan, math.inf, -math.inf])
 def test_subjective_scores_reject_nonfinite_or_non_numeric_values(value):
     result = _score(
@@ -392,13 +534,19 @@ def test_subpoint_gain_does_not_promote_even_with_lower_manual_review(gain):
     assert "insufficient_core_gain" in decision["reasons"]
 
 
-def test_equal_score_uses_tight_zero_tolerance_with_lower_manual_review():
+@pytest.mark.parametrize("near_zero_gain", [-5e-10, 5e-10])
+def test_near_zero_nonzero_gain_does_not_use_equal_score_branch(
+    near_zero_gain,
+):
     current = _promotion_snapshot()
     candidate = deepcopy(current)
-    candidate["core_score"] += 5e-10
+    candidate["core_score"] += near_zero_gain
     candidate["manual_review_rate"] = 0.01
 
-    assert promotion_decision(current, candidate)["promote"] is True
+    decision = promotion_decision(current, candidate)
+
+    assert decision["promote"] is False
+    assert "insufficient_core_gain" in decision["reasons"]
 
 
 def test_swapped_hard_failure_at_the_same_count_blocks_promotion():
@@ -452,6 +600,15 @@ def test_promotion_normalizes_structured_hard_failure_identity():
 )
 def test_malformed_candidate_numeric_fields_become_hard_failures(field, value):
     result = _score(candidate_blocks=[_candidate_block(**{field: value})])
+
+    assert result["passed"] is False
+    assert "invalid_candidate:b1" in result["hard_failure_ids"]
+
+
+def test_oversized_candidate_integer_returns_invalid_candidate_without_raising():
+    result = _score(
+        candidate_blocks=[_candidate_block(font_size=10**1000)]
+    )
 
     assert result["passed"] is False
     assert "invalid_candidate:b1" in result["hard_failure_ids"]
@@ -721,6 +878,15 @@ def test_malformed_promotion_candidate_returns_structured_reasons(
     assert decision["promote"] is False
     assert expected_reason in decision["reasons"]
     assert len(decision["reasons"]) == len(set(decision["reasons"]))
+
+
+def test_oversized_promotion_integer_returns_nonpromote_reason_without_raising():
+    candidate = _promotion_snapshot(core_score=10**1000)
+
+    decision = promotion_decision(_promotion_snapshot(), candidate)
+
+    assert decision["promote"] is False
+    assert "invalid_candidate:core_score" in decision["reasons"]
 
 
 def test_missing_current_promotion_key_returns_reason_instead_of_raising():
