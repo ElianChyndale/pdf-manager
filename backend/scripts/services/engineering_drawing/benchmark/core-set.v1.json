@@ -1,0 +1,18 @@
+{
+  "schema": "engineering-drawing-core-set-v1",
+  "benchmark_version": "core-v1",
+  "samples": [
+    {"sample_id":"core-01","category":"site_overview","relative_pdf":"报审图纸/275kV MEP Construction Drawing_260610/Construction Drawing/RCJM2 CN ELEC 20260610/Constrcution Drawing PDF/1310-CN-ELEC-A001_Site Plan.pdf","page_number":1,"goals":["map","rotated_text","company_information","whitespace_layout"]},
+    {"sample_id":"core-02","category":"mosque_site","relative_pdf":"03_CONSTRUCTION DWG_MASJID_11 NOV 2025/A1 WORKING DRAWING/00_Site Masjid Tok Muda_CONSTRUCTION.pdf","page_number":1,"goals":["malay","legend","title_block","multi_region"]},
+    {"sample_id":"core-03","category":"roof_detail","relative_pdf":"A3 DETAIL DRAWING/10_REV. JULAI 2025 ROOF DETAIL.pdf","page_number":1,"goals":["semantic_block","materials","numbers","units"]},
+    {"sample_id":"core-04","category":"corner_bead_detail","relative_pdf":"A3 DETAIL DRAWING/17-CORNER BEAD DETAIL.pdf","page_number":1,"goals":["detail","product_note","image_text_mix","title_block"]},
+    {"sample_id":"core-05","category":"tower_detail","relative_pdf":"A3 DETAIL DRAWING/13_REV. JULAI 2025 MENARA.pdf","page_number":1,"goals":["dense_vertical_labels","leaders","elevations","malay"]},
+    {"sample_id":"core-06","category":"drawing_list","relative_pdf":"A3 DETAIL DRAWING/00_LIST OF DRAWING_A3 FORMAT.pdf","page_number":1,"goals":["table_rows","cell_wrap","repeated_terms","border_protection"]},
+    {"sample_id":"core-07","category":"door_window_schedule","relative_pdf":"A3 DETAIL DRAWING/02_REV. JULAI 2025 JADUAL PINTU & TINGKAP.pdf","page_number":1,"goals":["table","dimensions","identifiers","graphics_text_mix"]},
+    {"sample_id":"core-08","category":"single_line_diagram","relative_pdf":"报审图纸/275kV MEP Construction Drawing_260610/Construction Drawing/RCJM2 CN ELEC 20260610/Constrcution Drawing PDF/1310-CN-ELEC-SCH-C001_275kV SLD.pdf","page_number":1,"goals":["system_relationships","equipment_ids","voltage","title_block"]},
+    {"sample_id":"core-09","category":"pa_schematic","relative_pdf":"报审图纸/275kV MEP Construction Drawing_260610/Construction Drawing/RCJM2 CN ELEC 20260610/Constrcution Drawing PDF/1310-CN-ELEC-PA-C001_PA Schematic.pdf","page_number":1,"goals":["network_lines","equipment_terms","table","association"]},
+    {"sample_id":"core-10","category":"dense_mechanical","relative_pdf":"报审图纸/275kV MEP Construction Drawing_260610/Construction Drawing/RCJM2 CN MECH 20260610/PDF/1312-CN-MECH-ACMV-B002.pdf","page_number":1,"goals":["repeated_equipment","dense_labels","leader_avoidance","tiny_text"]},
+    {"sample_id":"core-11","category":"company_project","relative_pdf":"报审图纸/RCJM2 CN R1 20260624/RCJM2 CN R1 20260624/PDF/1312-CN-MECH-PSI-A001-R1.pdf","page_number":1,"goals":["company","address","project_description","long_notes"]},
+    {"sample_id":"core-12","category":"elevation","relative_pdf":"报审图纸/275kV MEP Construction Drawing_260610/Construction Drawing/RCJM2 CN ELEC 20260610/Constrcution Drawing PDF/1310-CN-ELEC-A002_Elevation.pdf","page_number":1,"goals":["elevation_labels","vertical_boundaries","whitespace","right_information_column"]}
+  ]
+}
