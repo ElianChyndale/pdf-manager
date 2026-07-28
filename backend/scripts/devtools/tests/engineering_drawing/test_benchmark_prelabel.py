@@ -3,7 +3,10 @@ import json
 import pytest
 
 from services.engineering_drawing.benchmark.prelabel import (
+    PRELABEL_RESPONSE_JSON_SCHEMA,
+    VISUAL_REVIEW_RESPONSE_JSON_SCHEMA,
     build_prelabel_request,
+    derive_engineering_literals,
     parse_prelabel_response,
     parse_visual_review_response,
     request_prelabels,
@@ -99,6 +102,125 @@ def test_prelabel_keeps_paragraph_together_and_ids_separate():
 def test_prelabel_requires_a_json_object_with_nonempty_blocks(content):
     with pytest.raises(ValueError):
         _parse(content)
+
+
+def test_prelabel_rejects_undeclared_top_level_and_block_keys():
+    block = _block()
+    block["unexpected"] = True
+
+    with pytest.raises(ValueError, match="undeclared"):
+        _parse(_content(block))
+    with pytest.raises(ValueError, match="undeclared"):
+        _parse(json.dumps({"blocks": [_block()], "unexpected": True}))
+
+
+@pytest.mark.parametrize(
+    "block_id",
+    ["core-03-b01", "core-03-b0001", "core-03-b001-extra", "other-b001"],
+)
+def test_prelabel_requires_an_exact_sample_block_id(block_id):
+    with pytest.raises(ValueError, match="block_id"):
+        _parse(_content(_block(block_id)))
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    ["0.48MM BMT KL98", "KL98 BMT"],
+)
+def test_prelabel_reconciles_member_source_text_without_reordering_or_omission(source_text):
+    block = _block()
+    block["source_text"] = source_text
+
+    with pytest.raises(ValueError, match="source_text"):
+        _parse(_content(block))
+
+
+def test_prelabel_rejects_allowed_region_that_overlaps_unreferenced_source_text():
+    block = _block()
+    block["allowed_regions"] = [[110, 10, 200, 30]]
+
+    with pytest.raises(ValueError, match="allowed_regions"):
+        _parse(_content(block))
+
+
+def test_prelabel_deterministically_adds_referenced_source_boxes_to_forbidden_zones():
+    block = _block()
+    block["forbidden_zones"] = []
+
+    result = _parse(_content(block))
+
+    assert result["blocks"][0]["forbidden_zones"] == [(10.0, 10.0, 100.0, 30.0)]
+
+
+def test_prelabel_derives_complete_engineering_literal_runs():
+    source = "+12.5°C Ø16 600×300mm 45% AHU/01-2"
+
+    assert derive_engineering_literals(source) == [
+        "+12.5°C",
+        "Ø16",
+        "600×300mm",
+        "45%",
+        "AHU/01-2",
+    ]
+
+
+def test_prelabel_prompts_embed_real_closed_json_schemas():
+    request = build_prelabel_request(
+        sample_id="core-03",
+        image_data_url="data:image/png;base64,source",
+        regions=REGIONS,
+    )
+    prompt = request[0]["content"]
+
+    assert PRELABEL_RESPONSE_JSON_SCHEMA["required"] == ["blocks"]
+    assert PRELABEL_RESPONSE_JSON_SCHEMA["additionalProperties"] is False
+    assert PRELABEL_RESPONSE_JSON_SCHEMA["properties"]["blocks"]["items"]["properties"][
+        "block_id"
+    ]["pattern"]
+    assert VISUAL_REVIEW_RESPONSE_JSON_SCHEMA["required"] == [
+        "layout_association",
+        "page_readability",
+        "findings",
+    ]
+    assert VISUAL_REVIEW_RESPONSE_JSON_SCHEMA["additionalProperties"] is False
+    assert json.dumps(PRELABEL_RESPONSE_JSON_SCHEMA, sort_keys=True) in prompt
+
+
+def test_visual_review_rejects_undeclared_finding_and_top_level_keys():
+    with pytest.raises(ValueError, match="undeclared"):
+        parse_visual_review_response(
+            json.dumps(
+                {
+                    "layout_association": 17,
+                    "page_readability": 12,
+                    "findings": [],
+                    "unexpected": True,
+                }
+            ),
+            sample_id="core-03",
+            model="test-model",
+            candidate_region_ids=["core-03-b001"],
+        )
+    with pytest.raises(ValueError, match="undeclared"):
+        parse_visual_review_response(
+            json.dumps(
+                {
+                    "layout_association": 17,
+                    "page_readability": 12,
+                    "findings": [
+                        {
+                            "code": "leader_route",
+                            "region_id": "core-03-b001",
+                            "reason": "clear route",
+                            "unexpected": True,
+                        }
+                    ],
+                }
+            ),
+            sample_id="core-03",
+            model="test-model",
+            candidate_region_ids=["core-03-b001"],
+        )
 
 
 @pytest.mark.parametrize(
@@ -377,6 +499,9 @@ def test_request_visual_review_uses_known_candidate_ids_and_deterministic_transp
     ]
     assert calls[0]["temperature"] == 0.0
     assert calls[0]["response_format"] == {"type": "json_object"}
+    assert json.dumps(VISUAL_REVIEW_RESPONSE_JSON_SCHEMA, sort_keys=True) in calls[0][
+        "messages"
+    ][0]["content"]
     assert image_urls == [
         "data:image/png;base64,source",
         "data:image/png;base64,candidate",

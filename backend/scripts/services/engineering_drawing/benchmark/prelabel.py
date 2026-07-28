@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Callable
 
@@ -49,23 +50,98 @@ _REQUIRED_BLOCK_FIELDS = {
     "confidence",
     "risk_flags",
 }
+_LEADER_FIELDS = {"allowed", "required", "color", "width_points", "route", "arrow"}
+_FINDING_FIELDS = {"code", "region_id", "reason"}
 _LITERAL_PATTERN = re.compile(
     r"""
     (?<![A-Za-z0-9])
     (?:
-        [A-Za-z]{1,12}[-_./]?\d+[A-Za-z0-9._/-]*
+        (?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*(?:[x×/]\s*(?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*)+
+        (?:%|[A-Za-zµμ°][A-Za-z0-9²³µμ°%./-]{0,11}(?:\s+[A-Z][A-Z0-9²³µμ°%./-]{0,11})*)?
         |
-        \d+(?:\.\d+)?\s*(?:MM|CM|M|KG|G|MPA|KPA|PA|KV|V|KW|W|HZ|MA|A|BMT|MIL|IN|FT|°C|%)
-        (?:\s+[A-Z]{2,8})?
+        (?:[Øø⌀]\s*)?[+-]?\d+(?:[.,]\d+)?\s*(?:%|[A-Za-zµμ°][A-Za-z0-9²³µμ°%./-]{0,11}(?:\s+[A-Z][A-Z0-9²³µμ°%./-]{0,11})*)?
         |
-        (?:ID|NO|REF|TYPE|MODEL)\s*[-:\#]?\s*[A-Z0-9][A-Z0-9._/-]*
+        [A-Za-z][A-Za-z0-9._/+:\-]*\d[A-Za-z0-9._/+:\-]*
         |
-        \d+(?:\.\d+)?
+        (?:ID|NO|REF|TYPE|MODEL)\s*[-:\#]?\s*[A-Z0-9][A-Z0-9._/+:\-]*
     )
     (?![A-Za-z0-9])
     """,
     re.VERBOSE,
 )
+_DASH_TRANSLATION = str.maketrans({char: "-" for char in "‐‑‒–—―−"})
+_PUNCTUATION_RE = re.compile(r"[,:;()\[\]{}'\"`]+")
+
+_RECT_JSON_SCHEMA = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 4,
+    "maxItems": 4,
+}
+_LEADER_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["allowed", "required", "color", "width_points", "route", "arrow"],
+    "additionalProperties": False,
+    "properties": {
+        "allowed": {"type": "boolean"},
+        "required": {"type": "boolean"},
+        "color": {"type": "string", "enum": ["dark_blue"]},
+        "width_points": {"type": "number", "const": 0.32},
+        "route": {"type": "string", "enum": ["orthogonal"]},
+        "arrow": {"type": "boolean", "const": False},
+    },
+}
+_PRELABEL_BLOCK_JSON_SCHEMA = {
+    "type": "object",
+    "required": sorted(_REQUIRED_BLOCK_FIELDS),
+    "additionalProperties": False,
+    "properties": {
+        "block_id": {"type": "string", "pattern": r"^.+-b\d{3}$"},
+        "member_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "source_text": {"type": "string", "minLength": 1},
+        "source_language": {"type": "string", "minLength": 1},
+        "source_bbox": _RECT_JSON_SCHEMA,
+        "rotation": {"type": "integer", "enum": [0, 90, 180, 270]},
+        "reading_order": {"type": "integer", "minimum": 1},
+        "merge_decision": {"type": "string", "enum": sorted(_MERGE_DECISIONS)},
+        "gold_translation": {"type": "string", "minLength": 1, "pattern": r"[\u3400-\u9fff]"},
+        "literal_tokens": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "allowed_regions": {"type": "array", "items": _RECT_JSON_SCHEMA},
+        "forbidden_zones": {"type": "array", "items": _RECT_JSON_SCHEMA},
+        "font_size_range": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "leader": _LEADER_JSON_SCHEMA,
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "risk_flags": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    },
+}
+PRELABEL_RESPONSE_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["blocks"],
+    "additionalProperties": False,
+    "properties": {
+        "blocks": {"type": "array", "minItems": 1, "items": _PRELABEL_BLOCK_JSON_SCHEMA}
+    },
+}
+_VISUAL_FINDING_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["code", "region_id", "reason"],
+    "additionalProperties": False,
+    "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "region_id": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+    },
+}
+VISUAL_REVIEW_RESPONSE_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["layout_association", "page_readability", "findings"],
+    "additionalProperties": False,
+    "properties": {
+        "layout_association": {"type": "number", "minimum": 0, "maximum": 20},
+        "page_readability": {"type": "number", "minimum": 0, "maximum": 15},
+        "findings": {"type": "array", "items": _VISUAL_FINDING_JSON_SCHEMA},
+    },
+}
 
 
 def build_prelabel_request(
@@ -74,23 +150,23 @@ def build_prelabel_request(
     image_data_url: str,
     regions: list[dict],
 ) -> list[dict]:
+    schema_text = json.dumps(PRELABEL_RESPONSE_JSON_SCHEMA, ensure_ascii=False, sort_keys=True)
     rules = (
         "Return JSON only: no markdown, prose, or code fence. "
-        "The exact top-level schema is {{\"blocks\":[BLOCK,...]}} and blocks must be nonempty. "
-        "Every BLOCK must contain block_id, member_ids, source_text, source_language, "
-        "source_bbox, rotation, reading_order, merge_decision, gold_translation, literal_tokens, "
-        "allowed_regions, forbidden_zones, font_size_range, leader, confidence, and risk_flags. "
-        "Use block_id '{sample_id}-bNNN'; member_ids are supplied region IDs; rotation is one of "
+        "Conform exactly to this JSON Schema (including additionalProperties=false): "
+        + schema_text
+        + " "
+        f"Use block_id '{sample_id}-bNNN'; member_ids are supplied region IDs; rotation is one of "
         "0, 90, 180, 270; merge_decision is one of single, merge_paragraph, separate_identifier, "
         "table_cell, legend_entry, dimension, title_row. gold_translation must contain Chinese. "
         "Each rect is [x0,y0,x1,y1], font_size_range is [min,max] with min at least 3.2, and "
-        "leader is {{allowed:boolean,required:boolean,color:'dark_blue',width_points:0.32,"
-        "route:'orthogonal',arrow:false}}. Group complete notes/specifications by meaning, but keep "
+        "leader is {allowed:boolean,required:boolean,color:'dark_blue',width_points:0.32,"
+        "route:'orthogonal',arrow:false}. Group complete notes/specifications by meaning, but keep "
         "equipment IDs, table cells, legend entries, dimensions, and title rows separate. Preserve "
         "all numbers, units, models, IDs, and source rotation. Propose whitespace allowed_regions "
         "and source/dimension/line forbidden_zones. Prefer right, then below, then above; use an "
         "orthogonal leader only for dense CAD labels."
-    ).format(sample_id=sample_id)
+    )
     return [
         {"role": "system", "content": rules},
         {
@@ -117,6 +193,7 @@ def parse_prelabel_response(
     model: str | None = None,
 ) -> dict:
     payload = _json_object(content, "prelabel response")
+    _require_only_keys(payload, {"blocks"}, "prelabel response")
     raw_blocks = payload.get("blocks")
     if not isinstance(raw_blocks, list) or not raw_blocks:
         raise ValueError("prelabel response requires a non-empty blocks list")
@@ -209,6 +286,11 @@ def parse_visual_review_response(
     candidate_region_ids: Sequence[str] | None = None,
 ) -> dict:
     payload = _json_object(content, "visual review response")
+    _require_only_keys(
+        payload,
+        {"layout_association", "page_readability", "findings"},
+        "visual review response",
+    )
     layout = _bounded_score(payload.get("layout_association"), 20, "layout_association")
     readability = _bounded_score(payload.get("page_readability"), 15, "page_readability")
     raw_findings = payload.get("findings")
@@ -219,6 +301,7 @@ def parse_visual_review_response(
     for raw in raw_findings:
         if not isinstance(raw, dict):
             raise ValueError("every visual finding must be an object")
+        _require_only_keys(raw, _FINDING_FIELDS, "visual finding")
         code = raw.get("code")
         region_id = raw.get("region_id")
         reason = raw.get("reason")
@@ -250,12 +333,17 @@ def request_visual_review(
     request_fn: Callable[..., str],
 ) -> dict:
     known_region_ids = _candidate_region_ids(candidate_region_ids)
+    schema_text = json.dumps(
+        VISUAL_REVIEW_RESPONSE_JSON_SCHEMA, ensure_ascii=False, sort_keys=True
+    )
     messages = [
         {
             "role": "system",
             "content": (
-                "Return JSON only: no markdown, prose, or code fence. The exact top-level schema is "
-                "{\"layout_association\":number,\"page_readability\":number,\"findings\":[FINDING,...]}. "
+                "Return JSON only: no markdown, prose, or code fence. Conform exactly to this JSON "
+                "Schema (including additionalProperties=false): "
+                + schema_text
+                + " "
                 "layout_association is 0 through 20 and page_readability is 0 through 15. Every FINDING "
                 "is {\"code\":string,\"region_id\":string,\"reason\":string}; region_id must be one "
                 "of the supplied candidate IDs. Compare source and bilingual candidate as an engineering "
@@ -307,15 +395,26 @@ def _json_object(content: str, label: str) -> dict:
     return payload
 
 
+def _require_only_keys(value: dict, allowed: set[str], label: str) -> None:
+    undeclared = set(value).difference(allowed)
+    if undeclared:
+        raise ValueError(f"{label} contains undeclared keys: {', '.join(sorted(undeclared))}")
+
+
 def _validate_block_shape(raw: object, sample_id: str, seen_block_ids: set[str]) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("every prelabel block must be an object")
+    _require_only_keys(raw, _REQUIRED_BLOCK_FIELDS, "prelabel block")
     missing = _REQUIRED_BLOCK_FIELDS.difference(raw)
     if missing:
         raise ValueError(f"prelabel block is missing required fields: {', '.join(sorted(missing))}")
     item = dict(raw)
     block_id = item["block_id"]
-    if not isinstance(block_id, str) or not block_id.startswith(f"{sample_id}-b") or block_id in seen_block_ids:
+    if (
+        not isinstance(block_id, str)
+        or not re.fullmatch(re.escape(sample_id) + r"-b\d{3}", block_id)
+        or block_id in seen_block_ids
+    ):
         raise ValueError("block_id must be stable and unique")
     seen_block_ids.add(block_id)
     if not _nonempty_string(item["source_text"]) or not _nonempty_string(item["source_language"]):
@@ -374,20 +473,37 @@ def _validate_block_against_source(
             raise ValueError("source_bbox must contain every member bbox")
         member_regions.append(member)
         claimed_member_ids.add(member_id)
+    ordered_members = _members_in_reading_order(member_regions)
+    _validate_claimed_source_text(item["source_text"], ordered_members)
+    member_boxes = [_rect(member.get("bbox"), "referenced member bbox") for member in ordered_members]
+    for source_box in [source_bbox, *member_boxes]:
+        if source_box not in item["forbidden_zones"]:
+            item["forbidden_zones"].append(source_box)
+    source_obstacles = [
+        _rect(region.get("bbox"), "source region bbox")
+        for region in region_index.values()
+    ]
+    for source_obstacle in source_obstacles:
+        _require_inside_page(source_obstacle, page_rect, "source region bbox")
     for rect in [*item["allowed_regions"], *item["forbidden_zones"]]:
         _require_inside_page(rect, page_rect, "block geometry")
+    if any(
+        _intersects(allowed, source_bbox)
+        for allowed in item["allowed_regions"]
+        for source_bbox in source_obstacles
+    ):
+        raise ValueError("allowed_regions cannot overlap any source region bbox")
     if any(
         _intersects(allowed, forbidden)
         for allowed in item["allowed_regions"]
         for forbidden in item["forbidden_zones"]
     ):
         raise ValueError("allowed_regions cannot overlap forbidden_zones")
-    derived_literals = _derived_literals(member_regions)
-    tokens = {_literal_key(token) for token in item["literal_tokens"]}
-    translation = _literal_key(item["gold_translation"])
+    derived_literals = _derived_literals(ordered_members)
+    tokens = set(item["literal_tokens"])
+    translation = item["gold_translation"]
     for literal in derived_literals:
-        key = _literal_key(literal)
-        if key not in tokens or key not in translation:
+        if literal not in tokens or literal not in translation:
             raise ValueError(f"derived literal is missing from tokens or translation: {literal}")
 
 
@@ -441,8 +557,8 @@ def _validate_font_range(value: object) -> None:
 def _validate_leader(value: object) -> None:
     if not isinstance(value, dict):
         raise ValueError("leader must be an object")
-    required = {"allowed", "required", "color", "width_points", "route", "arrow"}
-    if not required.issubset(value):
+    _require_only_keys(value, _LEADER_FIELDS, "leader rule")
+    if not _LEADER_FIELDS.issubset(value):
         raise ValueError("leader rule is incomplete")
     if not isinstance(value["allowed"], bool) or not isinstance(value["required"], bool):
         raise ValueError("leader allowed and required must be booleans")
@@ -475,8 +591,51 @@ def _derived_literals(member_regions: list[dict]) -> set[str]:
         text = region.get("source_text", region.get("text", ""))
         if not isinstance(text, str):
             raise ValueError("referenced member source text must be a string")
-        literals.update(match.group(0).strip() for match in _LITERAL_PATTERN.finditer(text))
+        literals.update(derive_engineering_literals(text))
     return literals
+
+
+def _members_in_reading_order(member_regions: list[dict]) -> list[dict]:
+    ordered = []
+    for index, region in enumerate(member_regions):
+        reading_order = region.get("reading_order", index + 1)
+        if not _is_integer(reading_order) or reading_order <= 0:
+            raise ValueError("referenced member reading_order must be a positive integer")
+        ordered.append((reading_order, index, region))
+    return [region for _, _, region in sorted(ordered)]
+
+
+def _validate_claimed_source_text(claimed_source_text: str, member_regions: list[dict]) -> None:
+    claimed = _canonical_source_text(claimed_source_text)
+    cursor = 0
+    for region in member_regions:
+        source_text = region.get("source_text", region.get("text", ""))
+        if not isinstance(source_text, str) or not source_text.strip():
+            raise ValueError("referenced member source text must be a non-empty string")
+        member = _canonical_source_text(source_text)
+        position = claimed.find(member, cursor)
+        if position < 0:
+            raise ValueError("source_text must include member texts in reading order")
+        cursor = position + len(member)
+
+
+def _canonical_source_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value).translate(_DASH_TRANSLATION).casefold()
+    text = _PUNCTUATION_RE.sub(" ", text)
+    text = re.sub(r"\s*[-/]\s*", lambda match: match.group(0).strip(), text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def derive_engineering_literals(source_text: str) -> list[str]:
+    """Return unique source-ordered engineering runs that must survive translation exactly."""
+    seen = set()
+    result = []
+    for match in _LITERAL_PATTERN.finditer(source_text or ""):
+        literal = match.group(0).strip()
+        if literal and literal not in seen:
+            seen.add(literal)
+            result.append(literal)
+    return result
 
 
 def _candidate_region_ids(candidate_region_ids: Sequence[str] | None) -> set[str]:
