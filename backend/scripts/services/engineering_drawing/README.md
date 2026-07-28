@@ -65,3 +65,34 @@ python -m services.engineering_drawing.cli samples `
   --output-root 'output/pdf/engineering-drawing' `
   --work-dir 'tmp/pdfs/engineering-samples'
 ```
+
+## Benchmark workflow
+
+The benchmark is separate from production translation. Its default workspace is
+`output/pdf/engineering-drawing/benchmark`; it never writes delivery PDFs to
+`01_Bilingual_Inline/translated`.
+
+Lifecycle:
+
+1. `benchmark-seed` freezes the approved 12 source pages and hashes.
+2. `benchmark-prelabel` asks the Sol multimodal model for semantic blocks,
+   translations, layout constraints, and uncertainty flags.
+3. A reviewer resolves the items in `adjudication-queue.json`, records reasons,
+   and saves the resulting decisions JSON.
+4. `benchmark-adjudicate --lock` creates an audited `gold.locked.json`.
+5. `benchmark-visual-review` records the Sol model, prompt version, page-layout
+   score, readability score, and auditable findings for each candidate page.
+6. `benchmark-evaluate` applies hard gates, weighted scoring, visual
+   comparisons, and version-promotion rules.
+
+The seed command creates only frozen benchmark inputs:
+
+```powershell
+python -m services.engineering_drawing benchmark-seed `
+  --source-root 'D:\AmyProjects\business\WROK-CONTENT\malasia' `
+  --workspace 'output/pdf/engineering-drawing/benchmark'
+```
+
+Model-backed prelabel and visual-review commands must only be run with approved
+model budget. Never run `batch-translate` as part of benchmark construction,
+annotation, or evaluation.
