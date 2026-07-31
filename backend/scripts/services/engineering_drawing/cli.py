@@ -175,6 +175,13 @@ def _add_delivery_run_parser(subparsers: Any) -> None:
     delivery_sub = delivery.add_subparsers(dest="delivery_subcommand")
     for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start"):
         delivery_sub.add_parser(name)
+    review_import = delivery_sub.add_parser("review-decision-import")
+    review_import.add_argument("--file", required=True, type=Path)
+    review_import.add_argument("--decisions-out", required=True, type=Path)
+    review_apply = delivery_sub.add_parser("review-decision-apply")
+    review_apply.add_argument("--work-dir", required=True, type=Path)
+    review_apply.add_argument("--decisions", required=True, type=Path)
+    review_apply.add_argument("--run-record", required=True, type=Path)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -462,6 +469,29 @@ def _run_delivery_command(args: Any) -> int:
         if not shards:
             raise SystemExit("no plan shards found")
         print(json.dumps({"next_shard": str(shards[0]), "total": len(shards)}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "review-decision-import":
+        if args.file is None or args.decisions_out is None:
+            raise SystemExit("delivery-run review-decision-import requires --file --decisions-out")
+        from .review_decisions import add_decision, load_decisions
+
+        raw = json.loads(args.file.read_text(encoding="utf-8"))
+        items = raw.get("decisions") or raw if isinstance(raw, dict) else raw
+        for item in items if isinstance(items, list) else [raw]:
+            add_decision(args.decisions_out, item)
+        print(json.dumps({"imported": len(items), "total": len(load_decisions(args.decisions_out))}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "review-decision-apply":
+        if args.work_dir is None or args.decisions is None or args.run_record is None:
+            raise SystemExit("delivery-run review-decision-apply requires --work-dir --decisions --run-record")
+        from .review_decisions import build_revision_run, load_decisions
+
+        original_run = json.loads(args.run_record.read_text(encoding="utf-8"))
+        decisions = load_decisions(args.decisions)
+        revision_paths = []
+        for decision in decisions:
+            revision_paths.append(str(build_revision_run(original_run=original_run, decision=decision, work_dir=args.work_dir)))
+        print(json.dumps({"revision_runs": revision_paths}, ensure_ascii=False, indent=2))
         return 0
     if sub == "summary":
         if args.state is None:

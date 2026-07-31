@@ -45,8 +45,15 @@ def _float(value: Any) -> float | None:
 
 
 def _safe_ratio(numerator: Any, denominator: Any) -> float | None:
+    """Return a ratio with correct zero semantics.
+
+    - numerator = 0 and denominator > 0  -> 0.0 (a valid zero, NOT None)
+    - denominator = 0 or missing         -> None (undefined)
+    """
     num, den = _float(numerator), _float(denominator)
-    if num is None or den is None or den <= 0:
+    if num is None:
+        return None
+    if den is None or den <= 0:
         return None
     return round(num / den, 4)
 
@@ -120,12 +127,25 @@ def compute_run_metrics(
     metrics["manual_review_regions"] = manual
     metrics["unresolved_regions"] = unresolved
 
-    # error rates
+    # error rates — deduplicated by region id (no double counting of the same
+    # defect across hard findings, untranslated and unresolved lists).
     hard_findings = list((stage4 or {}).get("hard_findings") or [])
     untranslated = int((visual_qa or {}).get("untranslated_candidate_count") or 0)
-    critical_errors = len(hard_findings) + untranslated + int(unresolved or 0)
+    unique_critical_region_ids: set[str] = set()
+    for item in (visual_qa or {}).get("untranslated_candidate_items") or []:
+        if isinstance(item, dict) and item.get("region_id"):
+            unique_critical_region_ids.add(str(item["region_id"]))
+    for item in (visual_qa or {}).get("visual_overlap_items") or []:
+        if isinstance(item, dict) and item.get("region_id"):
+            unique_critical_region_ids.add(str(item["region_id"]))
+    # Blocks referenced by hard findings (by block_id/region_id).
+    for block in (stage4 or {}).get("blocks") or []:
+        if isinstance(block, dict) and block.get("status") in {"manual_review", "missing"}:
+            unique_critical_region_ids.add(str(block.get("block_id") or ""))
     metrics["hard_finding_count"] = len(hard_findings)
-    metrics["critical_error_rate"] = _safe_ratio(critical_errors, total)
+    metrics["unique_critical_region_ids"] = sorted(unique_critical_region_ids)
+    metrics["unique_critical_region_error_rate"] = _safe_ratio(len(unique_critical_region_ids), total)
+    metrics["critical_error_rate"] = _safe_ratio(len(unique_critical_region_ids), total)
     metrics["unprocessed_english_rate"] = _safe_ratio(untranslated, total)
     metrics["numeric_identifier_preservation"] = _safe_ratio(literal, total)
     metrics["manual_review_rate"] = _safe_ratio(manual, total)

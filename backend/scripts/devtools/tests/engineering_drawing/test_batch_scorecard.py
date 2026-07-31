@@ -43,6 +43,8 @@ def _synthetic_work_dir(tmp_path: Path, *, name: str = "run-1", hard_findings=No
             "leader_collision_count": 0,
             "untranslated_candidate_count": 1,
             "passed": False,
+            "untranslated_candidate_items": [{"region_id": "b1"}],
+            "visual_overlap_items": [{"region_id": "b1"}],
         },
     )
     _write_json(
@@ -90,8 +92,12 @@ def test_compute_run_metrics_formulas(tmp_path: Path) -> None:
     assert metrics["translated_regions"] == 8
     assert metrics["literal_labeled_regions"] == 1
     assert metrics["manual_review_regions"] == 1
-    # hard_findings(1) + untranslated(1) + unresolved(1) = 3 / 10
-    assert metrics["critical_error_rate"] == 0.3
+    # Unique critical region ids: b1 appears in BOTH untranslated and visual
+    # overlap items -> deduplicated to ONE; b3 (manual_review block) is a
+    # second distinct region. hard_findings carry no region id so they never
+    # inflate the count. Deduplicated / 10.
+    assert metrics["critical_error_rate"] == 0.2
+    assert metrics["unique_critical_region_ids"] == ["b1", "b3"]
     assert metrics["unprocessed_english_rate"] == 0.1
     assert metrics["numeric_identifier_preservation"] == 0.1
     assert metrics["manual_review_rate"] == 0.1

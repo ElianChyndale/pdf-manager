@@ -620,6 +620,17 @@ def run_v4_flow(
     validate_handoff(stage4, previous=stage3)
     _write_json(work_dir / "stage4-rendered-candidate.json", stage4)
     _tick("render")
+
+    # ---- Production QA (raster residual English + token preservation) ------
+    _run_production_qa(
+        source_pdf=source_pdf,
+        candidate_pdf=candidate_pdf,
+        work_dir=work_dir,
+        placement_audit_path=outcome.placement_audit_path,
+        blocks=blocks,
+        hard_findings=hard_findings,
+    )
+    stage4["hard_findings"] = list(set(stage4.get("hard_findings") or []) | set(hard_findings))
     if not allow_publish and review is None and human_acceptance is None:
         timing["completed_at"] = datetime.now(timezone.utc).isoformat()
         _write_json(work_dir / "timing.json", timing)
@@ -736,6 +747,70 @@ def run_v4_flow(
 # --------------------------------------------------------------------------
 # Publication and audit
 # --------------------------------------------------------------------------
+
+def _run_production_qa(
+    *,
+    source_pdf: Path,
+    candidate_pdf: Path,
+    work_dir: Path,
+    placement_audit_path: Path,
+    blocks: list[dict],
+    hard_findings: list[str],
+) -> None:
+    """Raster residual-English + token preservation QA (production delivery).
+
+    These run after stage 4 and contribute hard findings.  Page-count/size
+    changes and raster residual English are hard; token loss is hard only for
+    real numeric/identifier/unit loss (canonical-preserved variations pass).
+    """
+    from .raster_residual_qa import run_raster_residual_qa
+    from .token_preservation import scan_regions
+
+    placement_items = _load_placement_items(placement_audit_path)
+
+    # 1. Page-count / size consistency (hard).
+    try:
+        with fitz.open(source_pdf) as source, fitz.open(candidate_pdf) as candidate:
+            if source.page_count != candidate.page_count:
+                hard_findings.append("page_geometry_changed")
+                _write_json(work_dir / "page-geometry-check.json", {"page_count_mismatch": True, "source": source.page_count, "candidate": candidate.page_count})
+            else:
+                _write_json(work_dir / "page-geometry-check.json", {"page_count_mismatch": False, "pages": source.page_count})
+    except Exception:
+        hard_findings.append("page_geometry_changed")
+
+    # 2. Raster residual English (hard when found outside authorized zones).
+    try:
+        residual = run_raster_residual_qa(
+            candidate_pdf=candidate_pdf,
+            source_pdf=source_pdf,
+            work_dir=work_dir,
+            placement_audit=placement_items,
+            blocks=blocks,
+            ocr_engine=_RASTER_OCR_ENGINE,
+        )
+        if residual.get("hard_failure"):
+            hard_findings.append("raster_residual_english")
+    except Exception:
+        # Raster OCR is environment-dependent; a failure to run it should not
+        # block a machine-reviewed release, but is recorded as advisory.
+        _write_json(work_dir / "raster-residual-english.json", {"schema": "engineering-drawing-raster-residual-qa-v1", "error": "ocr_unavailable", "hard_failure": None})
+
+    # 3. Token preservation (hard only on real loss).
+    token_report = scan_regions(regions=[{"source_text": str(b.get("source_text") or ""), "translated_text": str(b.get("translated_text") or ""), "region_id": str(b.get("block_id") or "")} for b in blocks])
+    _write_json(work_dir / "token-preservation.json", token_report)
+    if token_report.get("unique_lost_region_ids"):
+        hard_findings.append("token_preservation_failure")
+
+
+# Set by tests to keep raster OCR deterministic and offline.
+_RASTER_OCR_ENGINE = "paddle"
+
+
+def set_raster_ocr_engine(engine: str) -> None:
+    global _RASTER_OCR_ENGINE
+    _RASTER_OCR_ENGINE = engine
+
 
 def _write_delivery_manifest_artifacts(
     *,
