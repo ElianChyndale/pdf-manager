@@ -1,0 +1,98 @@
+{
+  "schema": "engineering-drawing-frozen-production-config-v1",
+  "freeze_id": "delivery-160-rc1",
+  "git_commit": "fde70aa20d26b4a864d81b5012611005a1bb0df8",
+  "git_commit_short": "fde70aa2",
+  "workflow_version": "v4.0-readable-zone-complete",
+  "policy_fingerprint": "a6a3f10770863f6be8de280c410c92dea98bee450f8a53b4e14a14dda173ccb5",
+  "generated_at": "2026-07-31T05:33:23.830244+00:00",
+  "prompt_hashes": {
+    "rule_profile_engineering_drawing.txt": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\backend\\scripts\\foundation\\prompts\\rule_profile_engineering_drawing.txt",
+      "sha256": "fddebebc79e1e4df4f8d9d8306f4198920cad56a6289f7e74b2e079353ad0d86",
+      "present": true
+    },
+    "engineering_drawing_supervisor_v37.txt": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\backend\\scripts\\foundation\\prompts\\engineering_drawing_supervisor_v37.txt",
+      "sha256": "965253035c40d62f930811d596109ba09136e33b52f66934f58a301eeb805519",
+      "present": true
+    }
+  },
+  "font_hashes": {
+    "SourceHanSerifSC-Regular.otf": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\backend\\fonts\\SourceHanSerifSC-Regular.otf",
+      "sha256": "78aa7a328fd974df2d688c8a9fd74a33d8334dfa84ab24d9d11efb2ffc464117",
+      "present": true
+    },
+    "SourceHanSerifSC-Bold.otf": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\backend\\fonts\\SourceHanSerifSC-Bold.otf",
+      "sha256": "706b8c0de2deff6cbc0c87e2cdedfd33a78b7ffd76cebb4549012f197ba611fe",
+      "present": true
+    }
+  },
+  "ocr_model_identifiers": {
+    "paddle_det_model": "PP-OCRv5_server_det",
+    "paddle_rec_model": "PP-OCRv5_server_rec",
+    "pipeline_version": 6,
+    "dpi": 220,
+    "tile_size": 2200,
+    "tile_overlap": 180,
+    "deepseek_review_threshold": 0.82,
+    "min_paddle_confidence": 0.25,
+    "deepseek_max_regions_per_page": 6,
+    "direct_tile_render": false
+  },
+  "supervisor_model_identifier": {
+    "alias": "codex-sol-light",
+    "model": "gpt-5.6-sol",
+    "reasoning_profile": "light"
+  },
+  "translation_model_identifier": "deepseek-v4-flash",
+  "glossary_tm_hashes": {
+    "engineering-glossary-v1.csv": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\output\\pdf\\engineering-drawing\\05_Glossary_TM\\engineering-glossary-v1.csv",
+      "sha256": "1fa92ceabe80d833ffdf6906e8275519c205f88c148269eccb1998ad3bce1b4d",
+      "present": true
+    },
+    "translation-memory-v1.json": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\output\\pdf\\engineering-drawing\\05_Glossary_TM\\translation-memory-v1.json",
+      "sha256": "66e416a4c94ad28fe22a7a7752e32f9c7bb052b7e6ba427f9fea49bd5c1d1749",
+      "present": true
+    },
+    "translation-qa-cache.json": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\output\\pdf\\engineering-drawing\\05_Glossary_TM\\translation-qa-cache.json",
+      "sha256": "6a4a3a510d1607f774e55ba2af2712817e7d17f79256e997ab67e4ea1b3ecaeb",
+      "present": true
+    },
+    "geographic-entity-cache.json": {
+      "path": "D:\\AmyProjects\\business\\pdf-manager\\output\\pdf\\engineering-drawing\\05_Glossary_TM\\geographic-entity-cache.json",
+      "sha256": "dfbba8642c1b7cb82442b9f60f3b9adc065c7d27e8ac53882699780fc3dcc368",
+      "present": true
+    }
+  },
+  "document_context_template": {
+    "language_policy": "bilingual",
+    "units": "metric",
+    "drawing_discipline": "engineering",
+    "confidentiality_policy": "local_only"
+  },
+  "document_context_template_hash": "e151dabfd25bf6c60e410fc796ca112467739c3dea7ae894320307a0663447f9",
+  "cache_schema_versions": {
+    "translation_qa_cache_schema": "engineering_drawing_translation_qa_v1",
+    "translation_prompt_version": "2026-07-full-coverage-v3",
+    "cache_prefix": "engineering-drawing-cache-v1"
+  },
+  "dependency_versions": {
+    "pymupdf": "1.27.2.3",
+    "pikepdf": "10.6.0",
+    "Pillow": "11.0.0",
+    "numpy": "2.1.2",
+    "rapidocr_onnxruntime": "1.2.3",
+    "paddleocr": "not-installed"
+  },
+  "verification": {
+    "full_suite_passed": 662,
+    "test_command": "cd backend/scripts && python -m pytest devtools/tests/engineering_drawing -q",
+    "verified_at": "2026-07-31T05:33:23.874363+00:00"
+  }
+}
