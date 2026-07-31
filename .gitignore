@@ -70,3 +70,9 @@ docker/delivery/docker/app.env
 docker/delivery/docker/auth.local.json
 docker/delivery/docker/*.env
 !docker/delivery/docker/*.env.example
+
+# Confidentiality: client drawings and real customer data must never enter this public repo.
+WROK-CONTENT/
+**/input/**/*.pdf
+**/client-*
+**/delivery-160-raw/
