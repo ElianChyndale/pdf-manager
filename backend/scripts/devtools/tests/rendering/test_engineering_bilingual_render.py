@@ -7,6 +7,31 @@ import pytest
 from services.rendering.output.engineering import render_bilingual_overlay
 from services.rendering.output.engineering import render_bilingual_inline_only
 from services.rendering.output.engineering import render_source_chinese_dual
+from services.rendering.output.engineering import bilingual as bilingual_renderer
+from services.rendering.output.engineering.bilingual import _source_text_rects
+
+
+def test_v34_exact_region_never_moves_or_shrinks_supervisor_layout() -> None:
+    declared = fitz.Rect(10, 10, 90, 30)
+    result = bilingual_renderer._fit_v34_exact_region(
+        declared,
+        translated="设备间",
+        requested_font_size=6.0,
+        rotation=0,
+        font=fitz.Font("china-s"),
+        placement_bounds=fitz.Rect(0, 0, 100, 100),
+        occupied=[],
+    )
+    assert result == (declared, 6.0)
+    assert bilingual_renderer._fit_v34_exact_region(
+        declared,
+        translated="这是一段远远无法放入主管指定矩形的超长中文译文" * 20,
+        requested_font_size=6.0,
+        rotation=0,
+        font=fitz.Font("china-s"),
+        placement_bounds=fitz.Rect(0, 0, 100, 100),
+        occupied=[],
+    ) is None
 
 
 def _source_pdf(path: Path) -> None:
@@ -226,6 +251,171 @@ def test_inline_only_output_stays_single_page_without_reference_numbers(tmp_path
     assert result.reference_items == 0
 
 
+def test_inline_only_honors_clear_codex_review_target(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.pdf"
+    output_path = tmp_path / "reviewed-inline.pdf"
+    _source_pdf(source_path)
+
+    result = render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "sol-reviewed",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "review_target_bbox": [180, 28, 240, 44],
+                "review_font_size": 7,
+                "placement_decision_source": "codex_sol",
+                "action": "translate",
+                "qa_flags": [],
+            }
+        ],
+    )
+
+    placement = json.loads(
+        output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8")
+    )["placements"][0]
+    assert placement["status"] == "inline_reviewed"
+    assert placement["target_bbox"] == [180.0, 28.0, 240.0, 44.0]
+    assert placement["decision_source"] == "codex_sol"
+    assert result.inline_placements == 1
+
+
+def test_inline_only_prefers_clear_right_side_for_horizontal_caption(tmp_path: Path) -> None:
+    source_path = tmp_path / "right-preferred-source.pdf"
+    output_path = tmp_path / "right-preferred-inline.pdf"
+    _source_pdf(source_path)
+
+    result = render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "right-preferred",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "action": "translate",
+            }
+        ],
+    )
+
+    placement = json.loads(
+        output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8")
+    )["placements"][0]
+    assert placement["status"] == "inline_near"
+    assert placement["target_bbox"][0] > placement["source_bbox"][2]
+    assert result.inline_placements == 1
+
+
+def test_inline_only_rejects_codex_review_target_over_source_text(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.pdf"
+    output_path = tmp_path / "reviewed-inline.pdf"
+    _source_pdf(source_path)
+
+    result = render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "sol-reviewed",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "review_target_bbox": [20, 28, 150, 44],
+                "review_font_size": 7,
+                "placement_decision_source": "codex_sol",
+                "action": "translate",
+                "qa_flags": [],
+            }
+        ],
+    )
+
+    placement = json.loads(
+        output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8")
+    )["placements"][0]
+    assert placement["status"] == "inline_reflowed_after_review_collision"
+    assert placement["target_bbox"][0] > placement["source_bbox"][2]
+    assert result.inline_placements == 1
+
+
+def test_inline_only_rejects_codex_target_over_vector_only_source_ink(tmp_path: Path) -> None:
+    source_path = tmp_path / "vector-source.pdf"
+    output_path = tmp_path / "vector-inline.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.draw_rect(fitz.Rect(100, 55, 200, 80), color=(0, 0, 0), fill=(0, 0, 0), width=0.5)
+    doc.save(source_path)
+    doc.close()
+
+    result = render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "vector-only-source",
+                "page_index": 0,
+                "source_text": "VECTOR LABEL",
+                "translated_text": "矢量标签",
+                "bbox": [20, 28, 80, 44],
+                "review_target_bbox": [110, 60, 160, 74],
+                "review_font_size": 6,
+                "placement_decision_source": "codex_sol",
+                "action": "translate",
+            }
+        ],
+    )
+
+    placement = json.loads(
+        output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8")
+    )["placements"][0]
+    assert placement["status"] == "inline_reflowed_after_review_collision"
+    assert result.inline_placements == 1
+    assert result.review_items == 0
+
+
+def test_inline_only_preserves_authoritative_legacy_position_after_collision(tmp_path: Path) -> None:
+    source_path = tmp_path / "legacy-fallback-source.pdf"
+    output_path = tmp_path / "legacy-fallback-inline.pdf"
+    _source_pdf(source_path)
+
+    result = render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "legacy-fallback",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "legacy_bbox": [20, 28, 70, 44],
+                "review_target_bbox": [20, 28, 150, 44],
+                "review_font_size": 5,
+                "provenance": "legacy_translation",
+                "placement_decision_source": "codex_sol",
+                "action": "translate",
+                "qa_flags": ["authoritative_legacy_translation"],
+            }
+        ],
+    )
+
+    placement = json.loads(
+        output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8")
+    )["placements"][0]
+    with fitz.open(output_path) as output:
+        assert "配水泵" in output[0].get_text()
+    assert placement["status"] == "inline_reflowed_after_review_collision"
+    assert placement["target_bbox"] != [20.0, 28.0, 70.0, 44.0]
+    assert result.inline_placements == 1
+    assert result.review_items == 0
+
+
 def test_inline_only_rejects_a_caption_when_nearby_source_text_would_be_covered(tmp_path: Path) -> None:
     source_path = tmp_path / "blocked-source.pdf"
     output_path = tmp_path / "blocked-inline.pdf"
@@ -237,6 +427,7 @@ def test_inline_only_rejects_a_caption_when_nearby_source_text_would_be_covered(
     # blank part of the sheet.
     page.insert_text((20, 56), "ORIGINAL TITLE-BLOCK CONTENT", fontsize=10)
     page.insert_text((20, 20), "ORIGINAL HEADER", fontsize=10)
+    page.insert_text((104, 40), "ORIGINAL SIDE CONTENT", fontsize=10)
     doc.save(source_path)
     doc.close()
 
@@ -252,6 +443,7 @@ def test_inline_only_rejects_a_caption_when_nearby_source_text_would_be_covered(
                 "action": "translate",
             }
         ],
+        max_local_distance=8,
     )
 
     with fitz.open(output_path) as output:
@@ -294,6 +486,30 @@ def test_inline_only_keeps_vertical_caption_rotation_and_writes_placement_audit(
     assert result.inline_placements == 1
 
 
+def test_source_collision_rects_protect_complete_rotated_text_spans() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text(
+        (100, 180),
+        "ROTATED SOURCE WORDS",
+        fontsize=10,
+        rotate=90,
+    )
+    raw = page.get_text("dict")
+    span_bbox = next(
+        fitz.Rect(span["bbox"])
+        for block in raw["blocks"]
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+        if "ROTATED SOURCE WORDS" in span["text"]
+    )
+
+    collision_rects = _source_text_rects(page)
+
+    assert any(rect == span_bbox for rect in collision_rects)
+    doc.close()
+
+
 def test_inline_only_transforms_ocr_bbox_when_source_page_has_rotation(tmp_path: Path) -> None:
     source_path = tmp_path / "rotated-geometry-source.pdf"
     output_path = tmp_path / "rotated-geometry-inline.pdf"
@@ -327,3 +543,170 @@ def test_inline_only_transforms_ocr_bbox_when_source_page_has_rotation(tmp_path:
         displayed_bbox = [block[:4] for block in output[0].get_text("blocks") if "ROTATED LABEL" in block[4]][0]
     assert audit["source_bbox"] == pytest.approx(displayed_bbox)
     assert result.inline_placements == 1
+
+
+def test_inline_only_routes_a_short_orthogonal_leader_for_a_distant_dense_label(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "leader-source.pdf"
+    output_path = tmp_path / "leader-output.pdf"
+    _source_pdf(source_path)
+
+    render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "leader-label",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "review_target_bbox": [220, 100, 280, 118],
+                "review_font_size": 6,
+                "leader_required": True,
+                "action": "translate",
+            }
+        ],
+    )
+
+    audit = json.loads(output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8"))["placements"][0]
+    assert audit["leader"]["status"] == "drawn"
+    assert 3 <= len(audit["leader"]["path"]) <= 4
+    for start, end in zip(audit["leader"]["path"], audit["leader"]["path"][1:]):
+        assert start[0] == pytest.approx(end[0]) or start[1] == pytest.approx(end[1])
+
+
+def test_v3_leader_prefers_short_route_even_when_background_linework_crosses_it(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "v3-background-source.pdf"
+    output_path = tmp_path / "v3-background-output.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text((20, 40), "Distribution Water Pump", fontsize=10)
+    # This line deliberately crosses the shortest local leader route.  V3
+    # should keep the short connection instead of making a long detour.
+    page.draw_line(fitz.Point(150, 36), fitz.Point(220, 36), color=(0, 0, 0), width=3)
+    doc.save(source_path)
+    doc.close()
+
+    render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "v3-background-leader",
+                "page_index": 0,
+                "source_text": "Distribution Water Pump",
+                "translated_text": "配水泵",
+                "bbox": [20, 28, 150, 44],
+                "review_target_bbox": [220, 100, 280, 118],
+                "review_font_size": 6,
+                "leader_required": True,
+                "placement_decision_source": "multimodal_v3",
+                "qa_flags": ["multimodal_v3_plan"],
+                "placement_side": "external_gutter",
+                "placement_mode": "leader",
+                "action": "translate",
+            }
+        ],
+    )
+
+    audit = json.loads(output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8"))["placements"][0]
+    assert audit["leader"]["status"] == "drawn"
+    path = audit["leader"]["path"]
+    path_length = sum(
+        abs(end[0] - start[0]) + abs(end[1] - start[1])
+        for start, end in zip(path, path[1:])
+    )
+    direct_distance = abs(path[0][0] - path[-1][0]) + abs(path[0][1] - path[-1][1])
+    assert path_length <= direct_distance + 1.0
+
+
+def test_v3_visual_plan_can_use_blank_target_marked_by_false_ocr_text_box(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "v3-false-ocr-source.pdf"
+    output_path = tmp_path / "v3-false-ocr-output.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    doc.save(source_path)
+    doc.close()
+
+    # Simulate an OCR/native text span that claims the planned blank band is
+    # occupied even though the rendered page contains no ink there.
+    monkeypatch.setattr(
+        bilingual_renderer,
+        "_source_text_rects",
+        lambda _page: [fitz.Rect(180, 80, 250, 100)],
+    )
+
+    render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "v3-false-ocr-target",
+                "page_index": 0,
+                "source_text": "MISDETECTED SOURCE",
+                "translated_text": "可用空白译文",
+                "bbox": [20, 28, 150, 44],
+                "review_target_bbox": [180, 80, 250, 100],
+                "review_font_size": 6,
+                "placement_decision_source": "multimodal_v3",
+                "qa_flags": ["multimodal_v3_plan"],
+                "placement_side": "right",
+                "placement_mode": "inline",
+                "action": "translate",
+            }
+        ],
+    )
+
+    audit = json.loads(output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8"))["placements"][0]
+    assert audit["status"] == "inline_reflowed_after_review_collision"
+    assert audit["target_bbox"][0] > 180.0
+    assert audit["target_bbox"][2] < 250.0
+    assert audit["visual_ink_ratio"] == 0.0
+
+
+def test_explicit_leader_route_does_not_confuse_separated_parallel_lines() -> None:
+    from services.rendering.output.engineering.bilingual import _segments_intersect
+
+    assert not _segments_intersect(
+        ((700.0, 713.0), (700.0, 817.0)),
+        ((700.0, 649.0), (820.0, 649.0)),
+    )
+
+
+def test_inline_only_forbids_leaders_in_title_block_rows(tmp_path: Path) -> None:
+    source_path = tmp_path / "title-block-source.pdf"
+    output_path = tmp_path / "title-block-output.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text((20, 40), "PROJECT TITLE", fontsize=10)
+    doc.save(source_path)
+    doc.close()
+
+    render_bilingual_inline_only(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=[
+            {
+                "region_id": "title-block-row",
+                "page_index": 0,
+                "source_text": "PROJECT TITLE",
+                "translated_text": "项目名称",
+                "bbox": [20, 28, 110, 44],
+                "review_target_bbox": [210, 100, 280, 118],
+                "review_font_size": 6,
+                "layout_role": "title_block",
+                "leader_required": True,
+                "action": "translate",
+            }
+        ],
+    )
+
+    audit = json.loads(output_path.with_suffix(".inline-placement.json").read_text(encoding="utf-8"))["placements"][0]
+    assert audit["leader"]["status"] == "not_needed"

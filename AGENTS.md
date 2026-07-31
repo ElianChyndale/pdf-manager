@@ -464,3 +464,20 @@ Run any operation (compress, watermark, encrypt, etc.) across multiple PDFs in o
 - TOC remapping must account for page offset when pages are reordered
 - The Rust API spec is documented in [backend/rust_api/API_SPEC.md](backend/rust_api/API_SPEC.md)
 - Architecture decisions are in [doc/adr/](doc/adr/)
+
+## Engineering Drawing V4
+
+The engineering-drawing bilingual translation workflow (`V4.0`, version
+`v4.0-readable-zone-complete`) lives in
+[backend/scripts/services/engineering_drawing/](backend/scripts/services/engineering_drawing/).
+Read its [AGENTS.md](backend/scripts/services/engineering_drawing/AGENTS.md)
+before working on it — it is an agent operating manual for the 5-stage
+orchestration (`supervisor_plan → extraction_ledger → render_contract →
+rendered_candidate → release_authorization`).
+
+- CLI entry: `python -m services.engineering_drawing.cli <subcommand>` from `backend/scripts` (e.g. `v4-run`, `v4-run audit-formal`, `v4-run scorecard`, `benchmark-evaluate`).
+- Core invariant: **no renderer self-authorization** — a PDF enters the formal
+  `v4.0-readable-zone-complete` directory only through `run_v4.publish_to_formal`
+  with an authorization from `authorize_release` / `authorize_human_release`.
+- Spec: [backend/scripts/services/engineering_drawing/WORKFLOW_SPEC_V4.md](backend/scripts/services/engineering_drawing/WORKFLOW_SPEC_V4.md).
+- Tests: `cd backend/scripts && python -m pytest devtools/tests/engineering_drawing -q`.

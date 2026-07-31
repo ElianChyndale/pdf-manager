@@ -1,0 +1,27 @@
+# DEPRECATED - historical V3.x evidence-only run. V4 production authority is
+# services/engineering_drawing/run_v4.py (v4-run).
+import json,hashlib,shutil,sys
+from datetime import datetime,timezone
+from pathlib import Path
+ROOT=Path(r"D:\AmyProjects\business\pdf-manager");sys.path.insert(0,str(ROOT/"backend/scripts"))
+from services.engineering_drawing.multimodal_plan import validate_multimodal_plan
+from services.engineering_drawing.supervisor_contract import validate_real_supervisor_plan
+from services.engineering_drawing.supervisor_bundle import create_supervisor_run_bundle
+BASE=ROOT/"output/pdf/engineering-drawing/01_Bilingual_Inline/agent-artifacts/v3.11-cost-balanced-final-3"
+ZH={
+1:["集水坑；虚线表示屋面边缘","集水坑；排水坡向；屋谷盖板按制造商详图；屋面坡度2°；选用金属波纹屋面板","厚边缘盖板按工程师详图；5毫米厚封边；坡度2%；工字钢梁及C型檩条按工程师详图","景观；铺路砖按专业承包商规范并经建筑师批准；钢柱按工程师详图；集水坑；屋面边缘","边缘盖板按制造商详图；屋面含5毫米厚封边；坡度2°；虚线表示钢柱；景观；集水坑","钢桁架、钢柱及钢筋混凝土基础按工程师详图；铺路砖经建筑师批准；照明按机电规范；预留洞","平面图A，比例1:100","屋面平面图A，比例1:100；2°坡金属波纹屋面及5毫米厚封边按制造商详图","Y-Y剖面，比例1:50","景观；有顶摩托车位；现浇混凝土路缘；连锁混凝土铺砖；钢柱按工程师详图；集水坑；虚线表示屋面边缘","景观；有顶摩托车位；屋谷天沟；坡度2°；边缘盖板按制造商详图；虚线表示钢柱；集水坑","平面图B，比例1:100；项目：拆除并重建雪兰莪州巴生县加帕尔Tok Muda村Al-Ehsan清真寺；图名：有顶人行通道详图","平面图A、B；屋面平面图A、B；Y-Y剖面","屋面平面图B，比例1:100；图号；AC建筑设计私人有限公司，Pandan Kapital A座5层8-AD室","绘制：APIZ；修订：00；Pandan Indah MPAJ大道，55100雪兰莪；邮箱：acarch.sb@gmail.com","施工图；日期；修订；更正；备注；图号ACASB 2401/MTM/LJKB/DT-01","日期：2025年7月；比例1:100"],
+2:["项目名称：拆除并重建Al-Ehsan清真寺","水泥砂浆抹灰","详图A；上方800×800毫米洞口；125毫米厚AAC轻质砌块，4毫米找平层及2毫米饰面层；双面乳胶漆并经建筑师批准","地点：雪兰莪州巴生县加帕尔Tok Muda村","地面硬化剂；水泥砂浆抹灰饰面；楼层平面图","电缆沟及管道按电气工程师详图；600毫米宽×900毫米深钢筋混凝土电缆沟，50毫米厚可拆防水盖板；距墙至少1000毫米；2根Ø150 HDPE PN10管伸出硬地或排水沟600毫米","25毫米低碳钢条；125×125×6毫米钢底板，以12毫米锚栓固定；25×13毫米钢猫梯焊接于钢板，按制造商详图","塔楼详图：底层、屋面及塔楼平面图；A详图；X-X剖面","底层，比例1:100","125毫米厚AAC轻质砌块；内乳胶漆、外防水涂料；600×600毫米黑色粉末喷涂铝框高位上悬窗，配6毫米有色玻璃","详图A，比例1:10","1600毫米单层铝制穹顶","AC建筑设计私人有限公司","屋面平面图1（梁2）","上方；虚线表示预留洞；梁6标高21.950；150毫米厚钢筋混凝土板及防水按专业规范","12毫米厚抹灰；AAC轻质砌块；4毫米找平层；钢筋混凝土压顶及板按工程师详图；轻质伊斯兰图案压顶；内外防水饰面","AC建筑设计私人有限公司；Pandan Kapital A座5层8-AD室，Pandan Indah MPAJ大道，55100雪兰莪；绘制及修订信息","详图；坡向；技术规格；比例1:100","钢维护梯；梁4标高13.450；梁5标高16.450；550毫米宽×450毫米深钢筋混凝土排水沟；Ø110 UPVC圆顶格栅；防水按专业规范","250毫米宽×100毫米高轻质压顶；钢维护梯按工程师详图","钢筋混凝土加劲肋及250毫米宽维护平台；4个方形扬声器按电气规范；外部涂装经建筑师批准","图号ACASB 2401/MTM/MN/DT-01；绘制APIZ；日期2025年7月；比例1:100","塔楼平面图1（梁3），比例1:100","750×1500毫米单扇钢框；梁3标高8.800；250×100毫米轻质压顶；钢筋混凝土柱按工程师详图","25毫米厚轻质构件；Ø110 UPVC雨水管；550毫米宽×450毫米深钢筋混凝土排水沟及防水按工程师详图","施工图；修订更正日期","梁1标高7.250；黑色粉末喷涂铝百叶；溢流空间；钢筋混凝土压顶；电气规范；维护平台标高2.750","房间","100×100毫米轻质压顶；175毫米厚钢筋混凝土板；600×900毫米电缆沟及50毫米厚可拆防水盖板，按专业规范","备注；图纸","修订","塔楼平面图2（梁5），比例1:100","道路标高2.150；地面标高2.000","X-X剖面，比例1:100","距墙最小1000毫米","PN10管延伸至硬地或排水沟外，按电气工程师详图"],
+3:["屋脊及脊瓦盖板按专业承包商详图","现有4根木柱尺寸须现场复测","饰面；坡向；100毫米厚水洗卵石混凝土板；圆角木收边；专业详图","虚线表示125毫米宽×25毫米厚木板；现有木柱从原清真寺拆除并重建，涂Woodshield室外清漆","水洗卵石饰面","4根200×200毫米现有木柱拆除后重建；屋面坡度35°；125×25毫米木板涂Woodshield室外清漆","75毫米宽×40毫米厚木楼板搁栅；125×25毫米木板均涂Woodshield室外清漆，并按要求布置","平面图，比例1:50","选用铺地砖","屋面平面图，比例1:50","125毫米宽×40毫米厚外露木桁架，涂Woodshield室外清漆","圆角木收边","梁标高4.800","125×40毫米木联系梁、木檐口板及屋脊盖板按专业详图，涂Woodshield室外清漆","平台标高2.700","200×25毫米木边梁；125×25毫米木板；4根200×200毫米现有木柱拆除并重建，统一涂Woodshield室外清漆","125×40毫米木梁涂Woodshield室外清漆；不锈钢转角连接板及螺钉按制造商详图","详图1，比例1:5","正立面比例1:50；道路标高2.100；地面标高2.000；项目：拆除并重建Al-Ehsan清真寺","图纸名称：正立面","X-X剖面，比例1:50；100毫米厚水洗卵石板；AC建筑设计私人有限公司5层8-AD室","基础按工程师详图；木构件涂Woodshield室外清漆；图号及日期","备注；施工图；修订；更正","地点：雪兰莪州巴生县加帕尔Tok Muda村","阿尔-埃赫桑清真寺","凉亭详图：底层平面图、屋面图、正立面、X-X剖面及详图1","AC建筑设计私人有限公司；Pandan Indah MPAJ大道，55100雪兰莪；邮箱acarch.sb@gmail.com","Pandan Kapital A座5层8-AD室","绘制APIZ；日期2025年7月；修订00；比例1:50","图号ACASB 2401/MTM/GZ/DT-01"]}
+# Keep the approved geometry and shorten only the five fixed-box strings that
+# exceeded the deterministic source-overlap threshold after Chinese rendering.
+ZH[1][2] = "封边、工字钢梁及C型檩条按结构图；屋面坡度2%，5毫米封边"
+ZH[1][11] = "平面图B 1:100；有顶通道详图；Al-Ehsan清真寺重建工程"
+ZH[2][22] = "塔楼平面图1（梁3），1:100"
+ZH[3][18] = "正立面1:50；路面2.100；地面2.000；清真寺重建"
+ZH[3][22] = "施工图修订备注"
+def rawsha(x):return hashlib.sha256((json.dumps(x,ensure_ascii=False,sort_keys=True,indent=2)+"\n").encode()).hexdigest()
+recs=json.loads((BASE/"sample-records.json").read_text(encoding="utf-8"))["records"]
+for rec in recs:
+ w=Path(rec["artifact_dir"]);p=json.loads((w/"supervisor-plan.json").read_text(encoding="utf-8")); vals=ZH[rec["sample_index"]];assert len(vals)==len(p["semantic_blocks"])
+ for b,z in zip(p["semantic_blocks"],vals):b["translated_text"]=z;b["placement"]["render_text"]=z
+ stamp=datetime.now(timezone.utc).isoformat();raw={"schema":"sol-light-human-semantic-correction-v1","sample":rec["sample_index"],"geometry_changed":False,"corrected_blocks":len(vals)};inv=f"sol-light-semantic-{rec['sample_index']:02d}-{int(datetime.now().timestamp())}";p["supervisor_invocation"].update({"invocation_id":inv,"started_at":stamp,"completed_at":stamp,"response_sha256":rawsha(raw)});p=validate_multimodal_plan(p,source_pdf_path=Path(rec["source_pdf"]));p=validate_real_supervisor_plan(p,source_pdf_path=Path(rec["source_pdf"]),require_final_review=False);(w/"supervisor-plan.json").write_text(json.dumps(p,ensure_ascii=False,indent=2)+"\n",encoding="utf-8");shutil.rmtree(w/"supervisor-run",ignore_errors=True);m=json.loads((w/"agent-manifest.json").read_text(encoding="utf-8"));create_supervisor_run_bundle(bundle_dir=w/"supervisor-run",source_pdf_path=Path(rec["source_pdf"]),page_images=[Path(x["source_image"]) for x in m["pages"]],request={"task":"human semantic correction at fixed approved geometry","reference_usage":"translation_evidence_only"},raw_response=raw,normalized_plan=p,invocation_id=inv,agent_id="sol_light_supervisor",started_at=stamp,completed_at=stamp)

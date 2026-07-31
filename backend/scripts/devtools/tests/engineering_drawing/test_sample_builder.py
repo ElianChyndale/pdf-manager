@@ -145,7 +145,7 @@ def test_build_samples_uses_hybrid_ocr_instead_of_legacy_audit_regions(tmp_path:
         output_root=tmp_path / "output",
         work_dir=tmp_path / "work",
         samples=(SampleSpec("source.pdf", "fresh"),),
-        api_key="test-key",
+        api_key="test",
         enable_deepseek_ocr=False,
     )
 

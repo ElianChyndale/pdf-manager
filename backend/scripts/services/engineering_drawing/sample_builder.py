@@ -7,6 +7,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 import fitz
 
@@ -19,8 +20,6 @@ from .hybrid_ocr import HybridOcrConfig
 from .hybrid_ocr import run_hybrid_ocr
 from .harness import GeographicResolver
 from .harness import correct_geographic_regions
-from .harness import run_full_coverage_harness
-from .harness import write_harness_reports
 from .translation_qa import translate_and_judge_engineering_regions
 
 
@@ -649,6 +648,7 @@ def build_samples(
     enable_geographic_lookup: bool = True,
     ocr_config: HybridOcrConfig | None = None,
     fast_preview: bool = False,
+    supervisor_plans: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     audit_payload = json.loads(Path(audit_json_path).read_text(encoding="utf-8"))
     files = list(audit_payload.get("files", []))
@@ -658,6 +658,11 @@ def build_samples(
     results: list[dict[str, object]] = []
     translated_regions: list[dict] = []
     for sample in samples:
+        supervisor_plan = (
+            supervisor_plans.get(sample.output_stem)
+            if isinstance(supervisor_plans, Mapping)
+            else None
+        )
         file_audit = next(
             item for item in files if Path(item["source_path"]).name.casefold() == sample.match.casefold()
         )
@@ -680,6 +685,7 @@ def build_samples(
                 cache_dir=work_dir / "ocr-cache",
                 config=selected_ocr_config,
                 enable_deepseek=enable_deepseek_ocr,
+                supervisor_plan=supervisor_plan,
             )
             ocr_cache_hit = ocr_result.cache_hit
         regression_crop_path = _extract_page_crop(
@@ -729,6 +735,7 @@ def build_samples(
             model=model,
             base_url=base_url,
             cache_path=output_root / "05_Glossary_TM" / "translation-qa-cache.json",
+            supervisor_plan=supervisor_plan,
         )
         regions = []
         unresolved = []
@@ -762,16 +769,38 @@ def build_samples(
             )
             placement_path = draft_path.with_suffix(".inline-placement.json")
             placement = json.loads(placement_path.read_text(encoding="utf-8")).get("placements", [])
-            harness = run_full_coverage_harness(
-                translation_result.regions,
-                placement_audit=placement,
-                geographic_resolver=None,
-                context_hints=geo_context,
+            # Placement closure evidence, not a release gate.  The V4 release
+            # authority is run_v4.run_v4_flow + authorization; this legacy sample
+            # builder only records whether every verified region was placed.
+            placed_ids = {
+                str(item.get("region_id") or "")
+                for item in placement
+                if isinstance(item, dict)
+                and str(item.get("status") or "").startswith(("inline", "panel_reflowed"))
+            }
+            required_ids = {
+                str(region.get("region_id") or "")
+                for region in translation_result.regions
+                if str(region.get("coverage_status") or "") in {"translated", "literal_labeled"}
+                and str(region.get("translated_text") or "").strip()
+            }
+            blocking = sorted(required_ids - placed_ids)
+            harness_report = {
+                "required_regions": len(required_ids),
+                "safely_placed_regions": len(required_ids & placed_ids),
+                "blocking_regions": len(blocking),
+                "passed": not blocking,
+            }
+            harness_path.parent.mkdir(parents=True, exist_ok=True)
+            harness_path.write_text(
+                json.dumps(
+                    {"report": harness_report, "blocking": [{"region_id": value} for value in blocking]},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
             )
-            harness_json, _harness_csv = write_harness_reports(harness, output_json=harness_path)
-            harness_report = dict(harness.report)
-            harness_path = harness_json
-            if bool(harness.report.get("passed")):
+            if not blocking:
                 bilingual_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(draft_path, bilingual_path)
                 shutil.copy2(placement_path, bilingual_path.with_suffix(".inline-placement.json"))

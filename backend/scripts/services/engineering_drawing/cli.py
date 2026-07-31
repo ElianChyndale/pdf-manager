@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -35,6 +36,25 @@ from .benchmark.schema import GoldSample, validate_gold_sample
 from .benchmark.workspace import seed_workspace
 from .inventory import build_inventory
 from .legacy_audit import audit_inventory
+from .legacy_transfer import extract_legacy_translation_regions
+from .legacy_transfer import select_strict_additions
+from .semantic_grouping import build_semantic_groups
+from .codex_review import apply_codex_review_plan
+from .codex_review import build_codex_review_package
+from .codex_review import validate_codex_review_plan
+from .multimodal_plan import apply_multimodal_plan
+from .multimodal_plan import build_supervisor_handoff
+from .multimodal_plan import prepare_multimodal_plan_payload
+from .multimodal_plan import to_pdf_write_coordinates
+from .multimodal_plan import validate_multimodal_plan
+from .supervisor_contract import validate_real_supervisor_plan
+from .authorization import authorize_render
+from .agent_system import EngineeringDrawingAgent
+from .post_ocr_supervision import build_post_ocr_supervision_package
+from .post_ocr_supervision import load_ocr_payload
+from .overlay_pair import render_opaque_translation_companion
+from .overlay_pair import render_planned_opaque_blocks
+from .run_v4 import add_v4_parser, run_v4_command
 from .reports import write_report_bundle
 from .sample_builder import build_samples
 from .hybrid_ocr import HybridOcrConfig
@@ -42,6 +62,7 @@ from .hybrid_ocr import run_hybrid_ocr
 from .harness import GeographicResolver
 from .harness import run_full_coverage_harness
 from .harness import write_harness_reports
+from services.rendering.output.engineering import render_bilingual_inline_only
 
 
 def _benchmark_seed_workspace(workspace: Path) -> Path:
@@ -157,13 +178,98 @@ def _parser() -> argparse.ArgumentParser:
     ocr.add_argument("--end-page", type=int, default=-1)
     ocr.add_argument("--dpi", type=int, default=220)
     ocr.add_argument("--no-deepseek", action="store_true")
-    harness = subparsers.add_parser("harness")
-    harness.add_argument("--coverage-json", required=True, type=Path)
-    harness.add_argument("--placement-audit", type=Path)
-    harness.add_argument("--output", required=True, type=Path)
-    harness.add_argument("--geo-cache", type=Path)
-    harness.add_argument("--online-geo", action="store_true")
-    harness.add_argument("--context", action="append", default=[])
+    ocr.add_argument(
+        "--supervisor-plan",
+        type=Path,
+        help="Codex Sol Light production supervisor plan consumed before OCR.",
+    )
+    for harness_name in ("harness", "legacy-harness"):
+        harness = subparsers.add_parser(
+            harness_name,
+            help="LEGACY: historical V3.x full-coverage audit; V4 release authority is `v4-run`.",
+        )
+        harness.add_argument("--coverage-json", required=True, type=Path)
+        harness.add_argument("--placement-audit", type=Path)
+        harness.add_argument("--output", required=True, type=Path)
+        harness.add_argument("--geo-cache", type=Path)
+        harness.add_argument("--online-geo", action="store_true")
+        harness.add_argument("--context", action="append", default=[])
+    transfer = subparsers.add_parser("legacy-transfer")
+    transfer.add_argument("--source", required=True, type=Path)
+    transfer.add_argument("--legacy", required=True, type=Path)
+    transfer.add_argument("--output", required=True, type=Path)
+    transfer.add_argument("--additions-json", type=Path)
+    transfer.add_argument("--sol-review-plan", type=Path)
+    transfer.add_argument("--max-local-distance", type=float, default=96.0)
+    leader_mode = transfer.add_mutually_exclusive_group()
+    leader_mode.add_argument("--draw-leaders", dest="draw_leaders", action="store_true", default=True)
+    leader_mode.add_argument("--no-draw-leaders", dest="draw_leaders", action="store_false")
+    transfer.add_argument(
+        "--no-preserve-legacy-position",
+        action="store_true",
+        help="Reject a legacy-evidence caption when no V4-compliant nearby slot exists.",
+    )
+    v3_render = subparsers.add_parser(
+        "v3-render",
+        help="Compatibility command: render a validated plan; V4 production authority remains Sol Light only.",
+    )
+    v3_render.add_argument("--source", required=True, type=Path)
+    v3_render.add_argument("--plan", required=True, type=Path)
+    v3_render.add_argument("--output", required=True, type=Path)
+    v3_render.add_argument("--regions-json", type=Path)
+    v3_render.add_argument("--legacy", type=Path)
+    v3_render.add_argument("--agent-manifest", type=Path)
+    v3_render.add_argument("--supervisor-bundle", required=True, type=Path)
+    v3_render.add_argument("--max-local-distance", type=float, default=96.0)
+    v3_render.add_argument("--no-preserve-legacy-position", action="store_true")
+    overlay_render = subparsers.add_parser(
+        "v3-overlay-render",
+        help="Render the translated companion for a dense index; keep the source PDF untouched.",
+    )
+    overlay_render.add_argument("--source", required=True, type=Path)
+    overlay_render.add_argument("--plan", required=True, type=Path)
+    overlay_render.add_argument("--output", required=True, type=Path)
+    overlay_render.add_argument("--supervisor-bundle", required=True, type=Path)
+    overlay_render.add_argument(
+        "--ocr-json",
+        required=True,
+        type=Path,
+        help="OCR regions used to mask only verified source glyph boxes.",
+    )
+    supervisor_handoff = subparsers.add_parser(
+        "v3-supervisor-handoff",
+        help="Validate a multimodal supervisor plan and emit OCR/translation handoff files.",
+    )
+    supervisor_handoff.add_argument("--source", required=True, type=Path)
+    supervisor_handoff.add_argument("--plan", required=True, type=Path)
+    supervisor_handoff.add_argument("--output-dir", required=True, type=Path)
+    post_ocr = subparsers.add_parser(
+        "v3-post-ocr-supervision",
+        help="Build the image + OCR coordinates + engineering knowledge package for the second supervisor pass.",
+    )
+    post_ocr.add_argument("--source", required=True, type=Path)
+    post_ocr.add_argument("--page-image", required=True, type=Path)
+    post_ocr.add_argument("--ocr-json", required=True, type=Path)
+    post_ocr.add_argument("--initial-plan", required=True, type=Path)
+    post_ocr.add_argument("--output", required=True, type=Path)
+    post_ocr.add_argument("--knowledge", type=Path)
+    review_package = subparsers.add_parser("sol-review-package")
+    review_package.add_argument("--source", required=True, type=Path)
+    review_package.add_argument("--draft", required=True, type=Path)
+    review_package.add_argument("--manifest", required=True, type=Path)
+    review_package.add_argument("--placement-audit", required=True, type=Path)
+    review_package.add_argument("--output-dir", required=True, type=Path)
+    review_package.add_argument("--dpi", type=int, default=144)
+    batch = subparsers.add_parser("batch-translate")
+    batch.add_argument("--root", required=True, type=Path)
+    batch.add_argument("--output-root", required=True, type=Path)
+    agent_batch = subparsers.add_parser(
+        "agent-bootstrap",
+        help="Create original-PDF page packets for the single multimodal supervisor; never publishes without plans.",
+    )
+    agent_batch.add_argument("--root", required=True, type=Path)
+    agent_batch.add_argument("--output-root", required=True, type=Path)
+    agent_batch.add_argument("--dpi", type=int, default=144)
     benchmark_seed = subparsers.add_parser("benchmark-seed")
     benchmark_seed.add_argument("--source-root", required=True, type=Path)
     benchmark_seed.add_argument("--workspace", required=True, type=Path)
@@ -184,6 +290,12 @@ def _parser() -> argparse.ArgumentParser:
     benchmark_prelabel.add_argument("--regions-json", required=True, type=Path)
     benchmark_prelabel.add_argument("--model", default="gpt-5.6-sol")
     benchmark_prelabel.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    benchmark_prelabel.add_argument(
+        "--use-heldout",
+        action="store_true",
+        help="Permit touching a sample assigned to the heldout split.",
+    )
+    benchmark_prelabel.add_argument("--split-manifest", type=Path)
     benchmark_adjudicate = subparsers.add_parser("benchmark-adjudicate")
     benchmark_adjudicate.add_argument("--workspace", required=True, type=Path)
     benchmark_adjudicate.add_argument("--sample-id", required=True)
@@ -191,21 +303,135 @@ def _parser() -> argparse.ArgumentParser:
     benchmark_adjudicate.add_argument("--actor", default="user")
     benchmark_adjudicate.add_argument("--decided-at", required=True)
     benchmark_adjudicate.add_argument("--lock", action="store_true")
+    benchmark_adjudicate.add_argument("--use-heldout", action="store_true")
+    benchmark_adjudicate.add_argument("--split-manifest", type=Path)
     benchmark_visual = subparsers.add_parser("benchmark-visual-review")
     benchmark_visual.add_argument("--workspace", required=True, type=Path)
     benchmark_visual.add_argument("--candidate-root", required=True, type=Path)
     benchmark_visual.add_argument("--sample-id", required=True)
     benchmark_visual.add_argument("--model", default="gpt-5.6-sol")
     benchmark_visual.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    benchmark_visual.add_argument("--use-heldout", action="store_true")
+    benchmark_visual.add_argument("--split-manifest", type=Path)
     benchmark_evaluate = subparsers.add_parser("benchmark-evaluate")
     benchmark_evaluate.add_argument("--workspace", required=True, type=Path)
     benchmark_evaluate.add_argument("--candidate-root", required=True, type=Path)
     benchmark_evaluate.add_argument("--baseline-report", type=Path)
+    benchmark_evaluate.add_argument("--use-heldout", action="store_true")
+    benchmark_evaluate.add_argument("--split-manifest", type=Path)
+    benchmark_split = subparsers.add_parser(
+        "benchmark-split",
+        help="Write or inspect the immutable dev/regression/validation/heldout split manifest.",
+    )
+    benchmark_split.add_argument("--workspace", type=Path)
+    benchmark_split.add_argument("--manifest", type=Path)
+    benchmark_split.add_argument(
+        "--assign",
+        action="append",
+        default=[],
+        help="sample_id=split override, e.g. core-05=validation",
+    )
+    benchmark_split.add_argument("--author", default="")
+    benchmark_split.add_argument("--force", action="store_true")
+    add_v4_parser(subparsers)
     return parser
+
+
+def _resolve_split_path(workspace: Path | None, explicit: Path | None) -> Path | None:
+    """Resolve the split manifest: explicit arg, else workspace-local, else package default."""
+    if explicit is not None:
+        return Path(explicit)
+    if workspace is not None:
+        workspace_path = Path(workspace)
+        if (workspace_path / "split-manifest.json").is_file():
+            return workspace_path / "split-manifest.json"
+    package_default = Path(__file__).with_name("benchmark") / "split-manifest.json"
+    return package_default if package_default.is_file() else None
+
+
+def _guard_heldout_sample(args: Any) -> None:
+    """Exit 3 when the requested sample is heldout and --use-heldout is absent."""
+    from .benchmark.split import guard_heldout
+
+    split_path = _resolve_split_path(getattr(args, "workspace", None), getattr(args, "split_manifest", None))
+    try:
+        guard_heldout(
+            sample_ids=[args.sample_id],
+            split_path=split_path,
+            use_heldout=bool(getattr(args, "use_heldout", False)),
+        )
+    except ValueError as error:
+        print(json.dumps({"error": str(error), "use_heldout": True}, ensure_ascii=False, indent=2))
+        raise SystemExit(3) from error
+
+
+def _guard_heldout_workspace(args: Any) -> None:
+    """Exit 3 when the workspace contains heldout samples and --use-heldout is absent."""
+    from .benchmark.split import guard_heldout
+
+    workspace_lock = Path(args.workspace) / "manifest.lock.json"
+    if not workspace_lock.is_file():
+        return
+    lock = json.loads(workspace_lock.read_text(encoding="utf-8"))
+    sample_ids = [str(item.get("sample_id") or "") for item in lock.get("samples") or [] if isinstance(item, dict)]
+    split_path = _resolve_split_path(args.workspace, getattr(args, "split_manifest", None))
+    try:
+        guard_heldout(
+            sample_ids=sample_ids,
+            split_path=split_path,
+            use_heldout=bool(getattr(args, "use_heldout", False)),
+        )
+    except ValueError as error:
+        print(json.dumps({"error": str(error), "use_heldout": True}, ensure_ascii=False, indent=2))
+        raise SystemExit(3) from error
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "v4-run":
+        return run_v4_command(args)
+    if args.command == "benchmark-prelabel":
+        _guard_heldout_sample(args)
+    if args.command == "benchmark-adjudicate":
+        _guard_heldout_sample(args)
+    if args.command == "benchmark-visual-review":
+        _guard_heldout_sample(args)
+    if args.command == "benchmark-evaluate":
+        _guard_heldout_workspace(args)
+    if args.command == "benchmark-split":
+        from .benchmark.split import default_split_assignment, write_split_manifest
+        from datetime import datetime, timezone
+
+        manifest_path = args.manifest or (Path(__file__).with_name("benchmark") / "split-manifest.json")
+        core_manifest = load_core_manifest(Path(__file__).with_name("benchmark") / "core-set.v1.json")
+        assignments = default_split_assignment(item.sample_id for item in core_manifest.samples)
+        for raw in args.assign:
+            sample_id, _, split = str(raw).partition("=")
+            if not sample_id or not split:
+                raise SystemExit(f"invalid --assign {raw!r} (expected sample_id=split)")
+            assignments[sample_id.strip()] = split.strip()
+        written = write_split_manifest(
+            path=manifest_path,
+            assignments=assignments,
+            benchmark_version="core-v1",
+            author=args.author or "pdf-manager engineering-drawing team",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            force=args.force,
+        )
+        if args.workspace:
+            workspace_manifest = Path(args.workspace) / "split-manifest.json"
+            write_split_manifest(
+                path=workspace_manifest,
+                assignments=assignments,
+                benchmark_version="core-v1",
+                author=args.author or "pdf-manager engineering-drawing team",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                force=args.force,
+            )
+            print(json.dumps({"written": [str(written), str(workspace_manifest)], "assignments": assignments}, ensure_ascii=False, indent=2))
+        else:
+            print(json.dumps({"written": [str(written)], "assignments": assignments}, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "benchmark-seed":
         result = seed_workspace(
             args.source_root,
@@ -487,6 +713,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "ocr":
+        supervisor_plan = None
+        if args.supervisor_plan:
+            supervisor_payload = json.loads(
+                args.supervisor_plan.read_text(encoding="utf-8")
+            )
+            supervisor_plan = supervisor_payload.get(
+                "supervisor_plan", supervisor_payload
+            )
         result = run_hybrid_ocr(
             pdf_path=args.pdf,
             output_path=args.output,
@@ -495,10 +729,25 @@ def main(argv: list[str] | None = None) -> int:
             end_page=args.end_page,
             config=HybridOcrConfig(dpi=args.dpi),
             enable_deepseek=not args.no_deepseek,
+            supervisor_plan=supervisor_plan,
         )
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
         return 0
-    if args.command == "harness":
+    if args.command in {"harness", "legacy-harness"}:
+        if args.command == "harness":
+            print(
+                json.dumps(
+                    {
+                        "warning": (
+                            "harness is deprecated: V4 release authority is "
+                            "`v4-run` (run_v4.run_v4_flow) + authorization. "
+                            "Use `legacy-harness` for historical V3.x coverage audits."
+                        )
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
         coverage = json.loads(args.coverage_json.read_text(encoding="utf-8"))
         placement = []
         if args.placement_audit and args.placement_audit.exists():
@@ -512,6 +761,366 @@ def main(argv: list[str] | None = None) -> int:
         json_path, csv_path = write_harness_reports(result, output_json=args.output)
         print(json.dumps({"report": result.report, "json": str(json_path), "csv": str(csv_path)}, ensure_ascii=False, indent=2))
         return 0 if bool(result.report["passed"]) else 2
+    if args.command == "sol-review-package":
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        placement = json.loads(
+            args.placement_audit.read_text(encoding="utf-8")
+        ).get("placements", [])
+        regions = [
+            *(manifest.get("semantic_groups") or manifest.get("legacy_regions", [])),
+            *manifest.get("strict_additions", []),
+        ]
+        review_input = build_codex_review_package(
+            source_pdf_path=args.source,
+            draft_pdf_path=args.draft,
+            regions=regions,
+            placement_audit=placement,
+            output_dir=args.output_dir,
+            dpi=args.dpi,
+        )
+        print(
+            json.dumps(
+                {
+                    "review_input": str(review_input),
+                    "regions": len(regions),
+                    "required_model_family": "codex-sol",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "legacy-transfer":
+        legacy_regions = extract_legacy_translation_regions(
+            source_pdf_path=args.source,
+            legacy_pdf_path=args.legacy,
+        )
+        additions: list[dict] = []
+        if args.additions_json:
+            payload = json.loads(args.additions_json.read_text(encoding="utf-8"))
+            additions = select_strict_additions(
+                payload.get("additions", payload.get("regions", []))
+                if isinstance(payload, dict)
+                else payload
+            )
+        semantic_groups = build_semantic_groups(legacy_regions)
+        regions = [*semantic_groups, *additions]
+        sol_review: dict | None = None
+        if args.sol_review_plan:
+            sol_review = validate_codex_review_plan(
+                json.loads(args.sol_review_plan.read_text(encoding="utf-8")),
+                source_pdf_path=args.source,
+            )
+            regions = apply_codex_review_plan(regions, sol_review)
+        result = render_bilingual_inline_only(
+            source_pdf_path=args.source,
+            output_pdf_path=args.output,
+            regions=regions,
+            max_local_distance=args.max_local_distance,
+            draw_leaders=args.draw_leaders,
+            preserve_legacy_position=not args.no_preserve_legacy_position,
+        )
+        manifest_path = args.output.with_suffix(".translation-sources.json")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema": "engineering-drawing-legacy-transfer-v2",
+                    "source_pdf": str(args.source.resolve()),
+                    "legacy_pdf": str(args.legacy.resolve()),
+                    "legacy_regions": legacy_regions,
+                    "semantic_groups": semantic_groups,
+                    "strict_additions": additions,
+                    "sol_review": {
+                        "plan": str(args.sol_review_plan.resolve()),
+                        "model": sol_review["model"],
+                        "removed": len(sol_review["remove_region_ids"]),
+                        "moves": len(sol_review["moves"]),
+                        "additions": len(sol_review["additions"]),
+                    }
+                    if sol_review is not None
+                    else None,
+                    "render": {
+                        "inline_placements": result.inline_placements,
+                        "review_items": result.review_items,
+                        "placement_audit": str(
+                            args.output.with_suffix(".inline-placement.json")
+                        ),
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(
+                {
+                    "output": str(args.output),
+                    "legacy_regions": len(legacy_regions),
+                    "semantic_groups": len(semantic_groups),
+                    "strict_additions": len(additions),
+                    "sol_review_moves": len(sol_review["moves"]) if sol_review else 0,
+                    "sol_review_additions": (
+                        len(sol_review["additions"]) if sol_review else 0
+                    ),
+                    "inline_placements": result.inline_placements,
+                    "review_items": result.review_items,
+                    "manifest": str(manifest_path),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "v3-post-ocr-supervision":
+        initial_payload = json.loads(args.initial_plan.read_text(encoding="utf-8"))
+        initial_plan = initial_payload.get("supervisor_plan", initial_payload)
+        package = build_post_ocr_supervision_package(
+            source_pdf=args.source,
+            page_image=args.page_image,
+            ocr_payload=load_ocr_payload(args.ocr_json),
+            initial_supervisor_plan=initial_plan,
+            knowledge_path=args.knowledge,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(package, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({"output": str(args.output), "ocr_regions": package["ocr_region_count"]}, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "v3-supervisor-handoff":
+        raw_plan = prepare_multimodal_plan_payload(
+            json.loads(args.plan.read_text(encoding="utf-8")),
+            source_pdf_path=args.source,
+        )
+        plan = validate_multimodal_plan(raw_plan, source_pdf_path=args.source)
+        handoff = build_supervisor_handoff(plan, source_pdf_path=args.source)
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        handoff_path = output_dir / "supervisor-handoff.json"
+        ocr_path = output_dir / "ocr-tasks.json"
+        translation_path = output_dir / "translation-tasks.json"
+        placement_path = output_dir / "placement-policy.json"
+        handoff_path.write_text(json.dumps(handoff, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        ocr_path.write_text(json.dumps(handoff["ocr_tasks"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        translation_path.write_text(json.dumps(handoff["translation_tasks"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        placement_path.write_text(json.dumps(handoff["placement_policy"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "handoff": str(handoff_path),
+                    "ocr_tasks": len(handoff["ocr_tasks"]),
+                    "translation_tasks": len(handoff["translation_tasks"]),
+                    "delivery_mode": handoff["delivery_mode"],
+                    "page_type": handoff["page_type"],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "v3-overlay-render":
+        raw_plan_source = json.loads(args.plan.read_text(encoding="utf-8"))
+        render_authorization = authorize_render(
+            bundle_dir=args.supervisor_bundle,
+            source_pdf_path=args.source,
+            plan=raw_plan_source,
+        )
+        raw_plan = prepare_multimodal_plan_payload(
+            raw_plan_source,
+            source_pdf_path=args.source,
+        )
+        plan = validate_multimodal_plan(raw_plan, source_pdf_path=args.source)
+        if plan.get("delivery_mode") not in {
+            "overlay_pair",
+            "opaque_bilingual_reflow",
+        }:
+            raise ValueError(
+                "v3-overlay-render requires overlay_pair or opaque_bilingual_reflow"
+            )
+        result = render_opaque_translation_companion(
+            source_pdf_path=args.source,
+            output_pdf_path=args.output,
+            semantic_blocks=plan["semantic_blocks"],
+            ocr_regions=load_ocr_payload(args.ocr_json)["regions"],
+            include_source_text=plan.get("delivery_mode") == "opaque_bilingual_reflow",
+        )
+        args.output.with_suffix(".render-authorization.json").write_text(
+            json.dumps(render_authorization, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "v3-render":
+        raw_plan = json.loads(args.plan.read_text(encoding="utf-8"))
+        render_authorization = authorize_render(
+            bundle_dir=args.supervisor_bundle,
+            source_pdf_path=args.source,
+            plan=raw_plan,
+        )
+        # A deterministic render is only an executor step. When an agent
+        # manifest is supplied, reject self-declared/synthetic plans before
+        # any PDF write; the verified contract requires actual page-image
+        # evidence from the single multimodal supervisor.
+        if args.agent_manifest:
+            validate_real_supervisor_plan(
+                raw_plan,
+                source_pdf_path=args.source,
+                require_final_review=False,
+            )
+        if args.agent_manifest:
+            agent_manifest = json.loads(args.agent_manifest.read_text(encoding="utf-8"))
+            EngineeringDrawingAgent.validate_execution_binding(agent_manifest, args.source)
+            if agent_manifest.get("status") == "awaiting_multimodal_supervisor_plan":
+                plan_status = (
+                    raw_plan.get("agent_plan_status")
+                    or raw_plan.get("status")
+                    or (raw_plan.get("supervisor_plan") or {}).get("status")
+                )
+                if plan_status not in {"approved", "accepted", "ready_for_execution"}:
+                    raise ValueError(
+                        "agent manifest has no approved multimodal supervisor plan; "
+                        "set agent_plan_status=approved only after the single supervisor signs off"
+                    )
+        raw_plan = prepare_multimodal_plan_payload(raw_plan, source_pdf_path=args.source)
+        if args.agent_manifest:
+            EngineeringDrawingAgent.validate_single_supervisor_plan(raw_plan)
+        plan = validate_multimodal_plan(
+            raw_plan,
+            source_pdf_path=args.source,
+        )
+        execution_plan = to_pdf_write_coordinates(plan, source_pdf_path=args.source)
+        if execution_plan.get("delivery_mode") not in {"inline_bilingual", "opaque_bilingual_reflow"}:
+            raise ValueError(
+                "v3-render only writes approved inline_bilingual or "
+                "opaque_bilingual_reflow pages"
+            )
+        supervisor_plan = execution_plan.get("supervisor_plan")
+        if not isinstance(supervisor_plan, dict) or not supervisor_plan.get("ocr_tasks") or not supervisor_plan.get("translation_tasks"):
+            raise ValueError(
+                "v3-render requires a multimodal supervisor_plan with OCR and translation tasks"
+            )
+        base_regions: list[dict] = []
+        if args.regions_json:
+            payload = json.loads(args.regions_json.read_text(encoding="utf-8"))
+            raw_regions = payload.get("regions", payload) if isinstance(payload, dict) else payload
+            if not isinstance(raw_regions, list):
+                raise ValueError("V3 regions JSON must contain a regions list")
+            base_regions.extend(dict(item) for item in raw_regions if isinstance(item, dict))
+        if args.legacy:
+            legacy_regions = extract_legacy_translation_regions(
+                source_pdf_path=args.source,
+                legacy_pdf_path=args.legacy,
+            )
+            base_regions.extend(build_semantic_groups(legacy_regions))
+        opaque_modes = {"title_block", "table_cell"}
+        opaque_blocks = [
+            dict(block)
+            for block in execution_plan["semantic_blocks"]
+            if str((block.get("placement") or {}).get("mode") or "") in opaque_modes
+        ]
+        inline_blocks = [
+            dict(block) for block in execution_plan["semantic_blocks"] if block not in opaque_blocks
+        ]
+        if execution_plan.get("delivery_mode") == "opaque_bilingual_reflow" and not opaque_blocks:
+            raise ValueError("opaque_bilingual_reflow requires approved title_block/table_cell plans")
+        ocr_regions = list(base_regions)
+        panel_result = None
+        render_base = args.source
+        panel_pdf: Path | None = None
+        if opaque_blocks:
+            with tempfile.NamedTemporaryFile(
+                prefix=f"{args.output.stem}-opaque-", suffix=".pdf", delete=False
+            ) as temporary:
+                panel_pdf = Path(temporary.name)
+            panel_result = render_planned_opaque_blocks(
+                source_pdf_path=args.source,
+                output_pdf_path=panel_pdf,
+                semantic_blocks=opaque_blocks,
+                ocr_regions=ocr_regions,
+                strict_execution=execution_plan.get("execution_policy") == "strict_multimodal_execution",
+            )
+            if panel_result["failed_block_ids"]:
+                raise ValueError(
+                    "approved opaque supervisor blocks failed deterministic execution: "
+                    + ", ".join(panel_result["failed_block_ids"])
+                )
+            render_base = panel_pdf
+        inline_plan = dict(execution_plan)
+        inline_plan["semantic_blocks"] = inline_blocks
+        planned_regions = apply_multimodal_plan(base_regions, inline_plan)
+        try:
+            result = render_bilingual_inline_only(
+                source_pdf_path=render_base,
+                output_pdf_path=args.output,
+                regions=planned_regions,
+                max_local_distance=args.max_local_distance,
+                draw_leaders=True,
+                preserve_legacy_position=not args.no_preserve_legacy_position,
+            )
+        finally:
+            if panel_pdf is not None and panel_pdf.exists():
+                panel_pdf.unlink()
+        manifest_path = args.output.with_suffix(".translation-sources.json")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema": "engineering-drawing-multimodal-render-v3",
+                    "workflow_version": plan["workflow_version"],
+                    "model_provider": plan["model_provider"],
+                    "model_name": plan["model_name"],
+                    "reasoning_profile": plan["reasoning_profile"],
+                    "page_type": plan.get("page_type"),
+                    "delivery_mode": plan.get("delivery_mode"),
+                    "supervisor_plan": plan.get("supervisor_plan"),
+                    "plan": str(args.plan.resolve()),
+                    "coverage_inventory": plan["coverage_inventory"],
+                    "semantic_blocks": plan["semantic_blocks"],
+                    "render": {
+                        "opaque": panel_result,
+                        "inline_placements": result.inline_placements,
+                        "review_items": result.review_items,
+                        "placement_audit": str(args.output.with_suffix(".inline-placement.json")),
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args.output.with_suffix(".render-authorization.json").write_text(
+            json.dumps(render_authorization, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        print(
+            json.dumps(
+                {
+                    "output": str(args.output),
+                    "model_provider": plan["model_provider"],
+                    "model_name": plan["model_name"],
+                    "semantic_blocks": len(plan["semantic_blocks"]),
+                    "coverage_inventory": len(plan["coverage_inventory"]),
+                    "inline_placements": result.inline_placements,
+                    "review_items": result.review_items,
+                    "manifest": str(manifest_path),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "batch-translate":
+        from .agent_batch import run_agent_bootstrap
+
+        summary = run_agent_bootstrap(root=args.root, output_root=args.output_root)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "agent-bootstrap":
+        from .agent_batch import run_agent_bootstrap
+
+        summary = run_agent_bootstrap(root=args.root, output_root=args.output_root, dpi=args.dpi)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
     inventory = build_inventory(args.root)
     manifest_json, manifest_csv = inventory.write(args.output)
     response: dict[str, object] = {

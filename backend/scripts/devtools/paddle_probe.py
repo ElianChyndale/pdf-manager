@@ -1,3 +1,5 @@
+# DEPRECATED - historical V3.x evidence-only run. V4 production authority is
+# services/engineering_drawing/run_v4.py (v4-run).
 from __future__ import annotations
 
 import argparse

@@ -22,7 +22,7 @@ else
   content_scan_cmd() { xargs grep -nEI "$1"; }
 fi
 
-if echo "${files}" | files_match_cmd "${secret_file_pattern}" >/dev/null; then
+if echo "${files}" | files_match_cmd "${secret_file_pattern}" | grep -v '\.env\.example$' >/dev/null; then
   echo "[pre-commit] Blocked: staged secret-bearing file detected (.env/.key/.pem/etc)."
   echo "Unstage the file and use an example template instead."
   exit 1

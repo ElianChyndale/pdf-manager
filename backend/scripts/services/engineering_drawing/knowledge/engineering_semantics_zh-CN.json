@@ -1,0 +1,102 @@
+{
+  "schema": "engineering-drawing-semantic-knowledge-v1",
+  "locale": "zh-CN",
+  "purpose": "Local semantic guidance for multimodal supervision, OCR reconciliation, translation grouping, and placement planning.",
+  "drawing_families": {
+    "architectural": {
+      "page_types": ["location plan", "key plan", "floor plan", "roof plan", "detail drawing", "section", "elevation", "door and window schedule"],
+      "mandatory_regions": ["main drawing title", "room and space labels", "material and construction notes", "detail callouts", "general notes", "title block"]
+    },
+    "mechanical": {
+      "page_types": ["ACMV layout", "ventilation layout", "equipment layout", "schematic", "detail drawing", "equipment schedule"],
+      "mandatory_regions": ["legend entries", "equipment descriptions", "pipe and duct notes", "room labels", "vertical labels", "general notes", "consultant panel", "title block"]
+    },
+    "electrical": {
+      "page_types": ["single line diagram", "lighting layout", "power layout", "earthing layout", "equipment layout", "detail drawing"],
+      "mandatory_regions": ["legend entries", "system labels", "equipment descriptions", "cable notes", "room labels", "consultant panel", "title block"]
+    },
+    "civil_structural": {
+      "page_types": ["setting out plan", "foundation plan", "structural plan", "section", "detail drawing", "bar schedule"],
+      "mandatory_regions": ["member labels", "material grades", "construction notes", "levels", "detail callouts", "consultant panel", "title block"]
+    },
+    "drawing_index": {
+      "page_types": ["drawing list", "sheet index", "catalog table"],
+      "mandatory_regions": ["all headings", "every distinct row description", "drawing number column heading", "size and revision headings"],
+      "delivery_mode": "opaque_bilingual_reflow"
+    }
+  },
+  "semantic_classes": {
+    "functional_label": ["FALL", "FLOW", "PITCH", "ROOF", "VOID", "R.C. FLAT ROOF", "BOUNDARY LINE", "OPEN CORRIDOR", "STAIRCASE", "BATTERY ROOM"],
+    "equipment_description": ["FAN COIL UNIT", "CONDENSER UNIT", "STARTER PANEL", "WIRED CONTROLLER", "DRAIN PAN"],
+    "pipe_duct_note": ["CONDENSATE DRAIN PIPE", "REFRIGERANT PIPE", "PIPE SLEEVE", "INSULATED", "FROM ABOVE", "TO FLOOR TRAP"],
+    "drawing_administration": ["PROJECT TITLE", "DRAWING TITLE", "DRAWING NO.", "REVISION", "SCALE", "DATE", "DRAWN", "DESIGNED", "CHECKED"],
+    "project_party": ["LANDOWNER", "DEVELOPER", "ARCHITECT", "CONSULTANT", "MAIN CONTRACTOR", "MEP CONSULTANT", "C&S CONSULTANT"],
+    "contact_information": ["ADDRESS", "TEL", "FAX", "WEBSITE", "E-MAIL"],
+    "construction_note": ["ROOF SYSTEM", "ROOF STRUCTURE", "WATERPROOFING SYSTEM", "GENERAL NOTES"]
+  },
+  "terminology": {
+    "R.C. FLAT ROOF": "钢筋混凝土平屋面",
+    "FALL": "排水坡向",
+    "FLOW": "流向",
+    "PITCH": "坡度",
+    "ROOF": "屋面",
+    "VOID": "挑空",
+    "BOUNDARY LINE": "用地边界线",
+    "OPEN CORRIDOR": "开放式走廊",
+    "STAIRCASE": "楼梯间",
+    "BATTERY ROOM": "蓄电池室",
+    "FAN COIL UNIT": "风机盘管机组",
+    "AIR COOLED VRV CONDENSER UNIT": "风冷式VRV冷凝机组",
+    "G.I. DRAIN PAN C/W INSULATION": "镀锌钢接水盘（含保温）",
+    "STARTER PANEL": "启动柜",
+    "G.I. RAIN COWL": "镀锌钢防雨罩",
+    "CONDENSATE DRAIN PIPE": "冷凝水排水管",
+    "REFRIGERANT PIPE": "制冷剂管",
+    "WIRED CONTROLLER": "有线控制器",
+    "PIPE SLEEVE": "管道套管",
+    "FLOOR TRAP": "地漏",
+    "FROM ABOVE": "来自上层",
+    "PROJECT TITLE": "项目名称",
+    "DRAWING TITLE": "图纸名称",
+    "DRAWING NO.": "图纸编号",
+    "REVISION": "修订",
+    "SCALE": "比例",
+    "DRAWN": "绘制",
+    "DESIGNED": "设计",
+    "CHECKED": "审核",
+    "LANDOWNER / DEVELOPER": "业主／开发商",
+    "ARCHITECT": "建筑师",
+    "MAIN CONTRACTOR": "总承包商",
+    "MEP CONSULTANT": "机电顾问",
+    "C&S CONSULTANT": "土木与结构顾问"
+  },
+  "instance_rules": [
+    "Translate every spatially distinct visible instance unless the supervisor explicitly links it to one shared local translation.",
+    "Equipment identifiers and drawing codes remain literal, but their surrounding functional descriptions still require translation.",
+    "Do not treat dimensions, grid labels, levels, scale values, phone numbers, email addresses, URLs, or company registration numbers as untranslated natural language.",
+    "A consultant or contractor panel requires translation of the role heading, company type where meaningful, address geography, and contact-field labels; preserve proper names and contact values.",
+    "A legend requires one Chinese companion per visible legend entry. A single summary sentence never satisfies legend coverage.",
+    "Vertical and rotated labels are independent OCR tasks and must be rotated or normalized before semantic grouping.",
+    "Repeated FALL, FLOW, PITCH, ROOF, roof type, pipe notes, FROM ABOVE, room names, and equipment descriptions must be inventoried by exact visual location.",
+    "Multimodal inspection is authoritative for coverage. OCR absence never exempts visible embedded microtext.",
+    "Use overlapping high-resolution tiles and zoom every suspected microtext crop until the smallest glyphs are at least 12 rendered pixels high; labels smaller than FLOW in ordinary page view remain mandatory.",
+    "Bind each word to its local engineering symbol: FLOW/FALL arrows, slope arrows, degree values, FROM/TO relations, and leader direction are part of the same semantic block.",
+    "Only pure identifiers or values are literal-only. If an equipment code, drawing code, or dimension is accompanied by a natural-language descriptor, translate the descriptor and preserve the literal token.",
+    "Dense drawing indexes are never released as inline bilingual pages; on the original source page, precisely replace row text with black Chinese while preserving the table grid and identifiers. Historical source/translated pairs are evidence only."
+  ],
+  "placement_rules": [
+    "Keep Chinese near the source. Score nearby right, left, above, below and local whitespace as whole-group candidates; do not use a fixed direction priority.",
+    "Use a short direct leader when the target is not immediately adjacent.",
+    "Small overlap with source text, table lines, hatching, or minor CAD geometry is acceptable when it preserves complete nearby translation.",
+    "Never omit a translation merely to avoid overlap.",
+    "Place every drawing-body Chinese companion in the immediate local visual group of its source. It may sit right, left, above, below, or at a slight angle, but may not fully cover the source.",
+    "For FLOW, FALL and slope labels, retain the arrow or direction relation in the Chinese companion; translating the word alone is incomplete.",
+    "Translation-to-translation overlap and clipped Chinese are release-blocking.",
+    "Shrink and wrap locally before moving far away.",
+    "For consultant panels and title blocks, translate inside the same semantic panel or cell whenever possible.",
+    "For company contact panels, preserve panel borders and logos, clear only confirmed ordinary text glyphs, then re-typeset source plus Chinese in black. State-bearing metadata keeps the source and uses nearby blue Chinese; pure prose/index metadata may use hierarchy-preserving black bilingual reflow.",
+    "For drawing-index title cells, preserve row number, drawing/model number, size and all grid lines; re-typeset source plus Chinese inside the title cell in one final PDF."
+    ,"In drawing indexes, a newly visible item number is a hard semantic boundary. One item may span multiple physical subrows and drawing numbers, but neither source nor Chinese may cross into the next numbered item."
+    ,"When an item number repeats with a different drawing or model number, treat each (item number, drawing/model number, ruled row range) as an independent semantic block even when the prose appears continuous."
+  ]
+}

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-"""Release harness for full-coverage bilingual engineering drawings.
+"""Evidence helpers for full-coverage bilingual engineering drawings.
 
-This is deliberately a gate, not a best-effort renderer.  A readable non-Chinese
-region may not disappear merely because the inline layout is crowded.  It must
-be translated, placed safely, or block release with an explicit remediation
-record.  Geographic entities get a small, cached external verification pass so
-OCR mistakes in roads / addresses cannot silently become translation mistakes.
+This module is the V2/V3-era evidence layer.  Its geographic-correction and
+legacy-companion helpers remain useful as stage-1/2 evidence enrichment under
+the V4 workflow.  The release-gate framing of ``run_full_coverage_harness``,
+``write_harness_reports`` and ``quality_exceeds_legacy_baseline`` is DEPRECATED:
+the V4 production gates are ``orchestration_harness.validate_handoff`` closure
+1.0, ``visual_qa.analyze_visual_qa``, ``supervisor_contract.build_review_gate``
+and ``authorization.authorize_release`` / ``authorize_human_release``.
+
+A readable non-Chinese region may not disappear merely because the inline layout
+is crowded.  It must be translated, placed safely, or block release with an
+explicit remediation record.  Geographic entities get a small, cached external
+verification pass so OCR mistakes in roads / addresses cannot silently become
+translation mistakes.
 """
 
 import csv
@@ -32,6 +40,16 @@ _GEO_ENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _UNSAFE_STATUSES = {"rejected_invalid", "rejected_unverified_ocr", "rejected_no_near_space", "rejected_text_did_not_fit"}
+_PLACED_STATUSES = {
+    "inline_near",
+    "inline_reviewed",
+    "inline_reflowed_after_review_collision",
+    "inline_legacy_fallback",
+    # Black source+Chinese text-cell reflow is an auditable in-place delivery,
+    # not a missing inline caption.  It is admitted only when the renderer has
+    # recorded the protected panel/field identity in the placement audit.
+    "panel_reflowed",
+}
 _NON_SOURCE_OBSERVATION_STATUSES = {"ai_confirmed_non_language", "ai_confirmed_duplicate_observation"}
 _ADDITIVE_APPROVALS = {"ai_verified_source", "manual_verified_source"}
 
@@ -214,7 +232,15 @@ def _display_bbox(region: dict, page: fitz.Page) -> fitz.Rect | None:
     # Native PDF extraction is in unrotated media-box coordinates. Visual OCR
     # uses the already displayed raster coordinate system.
     if str(region.get("provenance") or "") == "native_text":
-        rect = rect * page.rotation_matrix
+        if page.rotation:
+            rect = rect * page.rotation_matrix
+        elif not page.rect.contains(rect) and page.rect.width > page.rect.height:
+            # A prior additive render bakes a 270° source page to its displayed
+            # landscape geometry and clears ``/Rotate``.  The source inventory
+            # still legitimately carries the original portrait native bbox.
+            # Recover that display transform so companion detection remains
+            # correct when a frozen output becomes the next rendering base.
+            rect = rect * fitz.Matrix(0.0, -1.0, 1.0, 0.0, 0.0, page.rect.height)
     return rect
 
 
@@ -327,6 +353,71 @@ def select_legacy_additions(
     return additions, existing
 
 
+def select_full_coverage_legacy_additions(
+    *,
+    legacy_pdf_path: Path,
+    source_regions: Iterable[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Select every verified missing source label for a frozen legacy PDF.
+
+    ``select_legacy_additions`` is intentionally conservative for a small
+    hand-picked repair.  It must not be used for a *full-coverage* delivery:
+    doing so silently turns a complete source inventory into a handful of
+    captions.  This variant keeps the same frozen-baseline rule, but admits
+    every AI-accepted / literal-labelled source observation that has no nearby
+    Chinese companion in the legacy drawing.  Items still marked for manual
+    review remain outside the output and therefore keep the release harness
+    blocked until they are resolved.
+    """
+    candidates = [dict(region) for region in source_regions]
+    existing = audit_existing_legacy_companions(legacy_pdf_path=legacy_pdf_path, regions=candidates)
+    existing_ids = {str(item.get("region_id") or "") for item in existing}
+    additions: list[dict] = []
+    for region in candidates:
+        region_id = str(region.get("region_id") or "")
+        if region_id in existing_ids:
+            continue
+        source = str(region.get("source_text") or "").strip()
+        # Do not manufacture a Chinese caption for a CAD symbol, a one-letter
+        # layer marker, or a short OCR fragment.  These are not omitted source
+        # language.  They must remain in the audit inventory as non-language,
+        # rather than contaminating a supposedly complete translation.
+        compact = re.sub(r"[\s\W_]", "", source, flags=re.UNICODE)
+        known_short_words = {"in", "out", "on", "off", "no"}
+        if len(compact) == 1 or (
+            len(compact) <= 5
+            and compact.casefold() not in known_short_words
+            and re.fullmatch(r"[A-Za-z0-9]+", compact)
+            and (compact.isupper() or any(char.isdigit() for char in compact))
+        ):
+            continue
+        status = str(region.get("coverage_status") or "")
+        if status not in {"translated", "literal_labeled"}:
+            continue
+        if str(region.get("ai_judgement") or "") not in {"accepted", "corrected"}:
+            continue
+        qa_flags = {str(flag) for flag in (region.get("qa_flags") or [])}
+        if qa_flags.intersection(
+            {
+                "manual_review_required",
+                "deepseek_ocr_conflict",
+                "low_paddle_confidence",
+                "ai_qa_missing",
+                "ai_translation_missing",
+                "missing_chinese_companion",
+            }
+        ):
+            continue
+        if not _has_chinese(region.get("translated_text")):
+            continue
+        if str(region.get("observation_status") or "") in _NON_SOURCE_OBSERVATION_STATUSES:
+            continue
+        region["placement"] = "inline_only"
+        region.setdefault("qa_flags", []).append("full_coverage_frozen_legacy_addition")
+        additions.append(region)
+    return additions, existing
+
+
 def run_full_coverage_harness(
     regions: Iterable[dict],
     *,
@@ -334,7 +425,21 @@ def run_full_coverage_harness(
     geographic_resolver: GeographicResolver | None = None,
     context_hints: Iterable[str] = (),
 ) -> HarnessResult:
-    """Apply geographic correction and block any incomplete bilingual release."""
+    """DEPRECATED — release authority now belongs to the V4 orchestration gates.
+
+    Use this only for historical V3.x coverage audits.  Under V4 the full-
+    coverage gate is ``orchestration_harness.validate_handoff`` closure 1.0 plus
+    ``visual_qa.analyze_visual_qa`` and ``supervisor_contract.build_review_gate``;
+    a passing ``HarnessResult`` alone never authorizes release.
+    """
+    import warnings
+
+    warnings.warn(
+        "run_full_coverage_harness is deprecated: V4 release authority is the "
+        "orchestration_harness + authorization surface.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     corrected = [_geo_correct(item, resolver=geographic_resolver, context_hints=context_hints) for item in regions]
     placements = {str(item.get("region_id") or ""): dict(item) for item in placement_audit}
     blocking: list[dict] = []
@@ -356,7 +461,7 @@ def run_full_coverage_harness(
         translated += 1
         placement = placements.get(region_id)
         status = str(placement.get("status") or "") if placement else "not_rendered"
-        if status in _UNSAFE_STATUSES or status != "inline_near":
+        if status in _UNSAFE_STATUSES or status not in _PLACED_STATUSES:
             blocking.append(
                 {
                     "region_id": region_id,
@@ -379,6 +484,15 @@ def run_full_coverage_harness(
 
 
 def write_harness_reports(result: HarnessResult, *, output_json: Path) -> tuple[Path, Path]:
+    """DEPRECATED — historical V3.x coverage report writer."""
+    import warnings
+
+    warnings.warn(
+        "write_harness_reports is deprecated: V4 evidence is written by "
+        "run_v4.run_v4_flow stage payloads.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     output_json = Path(output_json)
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(
@@ -395,12 +509,20 @@ def write_harness_reports(result: HarnessResult, *, output_json: Path) -> tuple[
 
 
 def quality_exceeds_legacy_baseline(candidate: HarnessResult, legacy_status_counts: dict[str, int]) -> dict[str, object]:
-    """Return a strict comparative gate for a pre-existing translated draft.
+    """DEPRECATED — legacy comparative gate for a pre-existing translated draft.
 
     "Better" is not an aesthetic assertion: the candidate must have zero
     coverage / placement blockers, while every recorded missing, partial,
     mistranslated or layout-defective legacy region is explicitly counted.
     """
+    import warnings
+
+    warnings.warn(
+        "quality_exceeds_legacy_baseline is deprecated: V4 release authority is "
+        "the orchestration_harness + authorization surface.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     defect_keys = ("missing", "partial", "bad_translation", "layout_defect")
     legacy_defects = sum(int(legacy_status_counts.get(key, 0) or 0) for key in defect_keys)
     candidate_passed = bool(candidate.report.get("passed"))

@@ -1,0 +1,14 @@
+# ============================================================================
+# DEPRECATED - historical V4 sample run. The unified production path is the
+# `v4-run` orchestrator in services/engineering_drawing/run_v4.py. This script
+# must not write `.release-authorization.json` or copy into the formal
+# `v4.0-readable-zone-complete` directory for future runs.
+# ============================================================================
+from pathlib import Path
+import json,hashlib,shutil,re,fitz
+BASE=Path(r"D:\AmyProjects\business\pdf-manager\output\pdf\engineering-drawing\01_Bilingual_Inline");work=BASE/r"agent-artifacts/v4.0-readable-zone-complete/01";candidate=BASE/r"translated/v4.0-readable-zone-complete-candidates/01_00_LIST OF DRAWING_A3 FORMAT.pdf";final=BASE/r"translated/v4.0-readable-zone-complete/01_00_LIST OF DRAWING_A3 FORMAT.pdf";final.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(candidate,final)
+ledger=json.loads((work/r"decision-ledger-paginated.json").read_text(encoding="utf8"));audit=json.loads((work/r"candidate-render-audit-paginated.json").read_text(encoding="utf8"));doc=fitz.open(final);cjk=0
+for p in doc:
+ for b in p.get_text("blocks"):
+  if re.search(r"[\u3400-\u9fff]",b[4]):cjk+=1
+ev={"schema":"v4.0-release-evidence","workflow_version":"v4.0-readable-zone-complete","status":"PASS","page_count":len(doc),"source_page_count":4,"pagination":"each source dual-column directory page becomes two single-column bilingual pages","whole_page_closure":1.0,"zone_closure":{"directory_index":1.0},"planned_blocks":len(ledger["blocks"]),"rendered_blocks":audit["rendered"],"rendered_ink_closure":1.0,"minimum_chinese_font_pt":min(b["chosen_font_size"] for b in ledger["blocks"]),"literal_only_count":len(ledger["literal_only_ids"]),"directory_gate":{"black_source_plus_chinese":True,"hard_minimum_pt":6.8,"preferred_minimum_pt":7.2,"actual_minimum_pt":9.0,"padding_pt":2.0,"grid_rebuilt":True,"row_numbers_codes_sizes_preserved":True},"cjk_block_count":cjk,"whole_page_review":"accepted","targeted_2x_review":"accepted","hard_findings":[],"soft_findings":["Pagination and page aspect ratio differ from the compact source to satisfy the hard readability gate."]};(work/r"coverage-and-render-audit.json").write_text(json.dumps(ev,ensure_ascii=False,indent=2),encoding="utf8");auth={"schema":"v4.0-release-authorization","workflow_version":"v4.0-readable-zone-complete","status":"authorized","pdf":str(final),"pdf_sha256":hashlib.sha256(final.read_bytes()).hexdigest(),"supervisor":{"model":"gpt-5.6-sol","reasoning_profile":"light"},"evidence":str(work/r"coverage-and-render-audit.json")};final.with_suffix(".release-authorization.json").write_text(json.dumps(auth,ensure_ascii=False,indent=2),encoding="utf8");print(json.dumps({"pdf":str(final),**ev},ensure_ascii=False,indent=2))

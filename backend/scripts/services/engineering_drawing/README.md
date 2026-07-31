@@ -1,117 +1,80 @@
-# Engineering drawing backend
+# Engineering drawing bilingual production
 
-This backend inventories source/legacy PDFs, audits missing translations, runs
-hybrid OCR, and renders bilingual overlay and source/Chinese dual-page PDFs.
+Active workflow: `v4.0-readable-zone-complete`.
 
-## OCR strategy
+The sole normative specification is
+`WORKFLOW_SPEC_V4.md` (formerly `WORKFLOW_SPEC_V2_BLOCK.md`; renamed to match
+its actual V4.0 content).
+Runtime constants are in `workflow_policy.py`; the supervisor receives
+`engineering_drawing_supervisor_v37.txt` and
+`rule_profile_engineering_drawing.txt`. These four sources must express the same
+V4 semantics. Historical V2/V3 artifacts and output directories are evidence
+only and must never be used as active production rules.
 
-1. Read the native PDF text layer.
-2. Render each page at 220 DPI.
-3. Run `PP-OCRv5_server_det` + `PP-OCRv5_server_rec` on the full page and
-   overlapping 2200 px tiles.
-4. Deduplicate native and visual regions by geometry and normalized text.
-5. Send only unique low-confidence, rotated, or fixed-regression crops to
-   DeepSeek-OCR-2.
-6. Keep a high-confidence Paddle result when DeepSeek disagrees; record the
-   disagreement as `deepseek_ocr_conflict` for manual review.
+## Production contract
 
-DeepSeek-OCR-2 uses BF16 weights. On GPUs below 12 GiB the runner keeps the
-vision encoder and first eight language layers on the GPU and offloads the
-remaining layers to CPU. This preserves OCR quality on the local 8 GiB GPU
-without quantizing the verification model.
+All stages use `orchestration_harness.py` as the executable handoff contract;
+they do not independently reinterpret prose rules. Every artifact carries the
+same source digest, V4 workflow version, policy fingerprint, stable source IDs,
+zone assignments and per-block render mode.
 
-## Local runtimes
+The fixed state machine is:
 
-The default paths are:
+1. `supervisor_plan`: Sol Light partitions the rendered page and chooses one
+   immutable A/B render mode per translated block.
+2. `extraction_ledger`: OCR/native/reference evidence fills the supervisor's
+   stable IDs; it cannot invent zones or silently classify prose as literal.
+3. `render_contract`: the executor receives complete blocks, typography and
+   mask/placement evidence; it cannot merge, omit or change render mode.
+4. `rendered_candidate`: whole-page, per-zone and visible-ink closure must all
+   equal 1.0; hard findings block while soft findings remain non-blocking.
+5. `release_authorization`: rendered-page review and explicit authorization are
+   required. A candidate file alone is never a deliverable.
 
-```text
-.runtime/ocr/paddle/Scripts/python.exe
-.runtime/ocr/deepseek/Scripts/python.exe
-.runtime/ocr/models/deepseek-ocr-2/
-```
+Each stage behaves like a coordinated skill with one purpose, one validated
+input and one validated output. Handoff validation runs before the next stage,
+so ambiguity cannot accumulate downstream.
 
-Dependencies are pinned in `ocr_runners/requirements-paddle.txt` and
-`ocr_runners/requirements-deepseek.txt`. DeepSeek-OCR-2 is loaded from the
-local model directory when present, otherwise its Hugging Face model id is
-used.
+The single multimodal supervisor is Codex `gpt-5.6-sol` with light reasoning.
+It inspects the original page, partitions zones, binds every stable source
+`line_id`, translates complete semantic blocks, designs readable typography and
+positions, and reviews the rendered page. OCR and native PDF text are evidence;
+the reference PDF supplies wording only. The original PDF is always the render
+base.
 
-## Commands
+Every release requires:
 
-Run inventory and legacy audit:
+- whole-page and per-zone content closure of 1.0;
+- planned-block to visible-CJK-ink closure of 1.0;
+- directory rows rendered as readable black source plus Chinese;
+- company cells rendered with complete bilingual information in actual non-logo
+  whitespace;
+- drawing-body source preserved with nearby complete blue Chinese;
+- readable type at normal review scale and targeted 2x crops;
+- immutable supervisor bundle, render authorization, final visual review and
+  release authorization.
 
-```powershell
-$env:PYTHONPATH='backend/scripts'
-python -m services.engineering_drawing.cli all `
-  --root '<malasia-root>' `
-  --output 'output/pdf/engineering-drawing' `
-  --screenshots
-```
+## Typography summary
 
-Run one-page hybrid OCR:
+- Directory: batch scale 1.20, preferred 7.2pt, hard minimum 6.8pt, 1.5–3.0pt
+  cell padding, largest fitting type close to the corresponding table rules.
+- Company cells: batch scale 1.18, preferred 6.8pt, hard minimum 6.4pt, measured
+  independently per cell with logos and borders protected.
+- Drawing body: preferred 6.4pt, hard minimum 5.8pt, at least 85% of the source
+  visual size.
 
-```powershell
-python -m services.engineering_drawing.cli ocr `
-  --pdf '<source.pdf>' `
-  --output 'output/pdf/engineering-drawing/04_QA_Reports/source-ocr.json' `
-  --cache-dir 'output/pdf/engineering-drawing/04_QA_Reports/ocr-cache' `
-  --start-page 1 --end-page 1
-```
+Use semantic wrapping and additional whitespace before reducing type. Missing,
+microscopic, clipped, garbled or visibly absent translations block release.
 
-Build the three sample deliverables:
+## Main entry points
 
-```powershell
-python -m services.engineering_drawing.cli samples `
-  --audit-json 'output/pdf/engineering-drawing/legacy-audit.json' `
-  --output-root 'output/pdf/engineering-drawing' `
-  --work-dir 'tmp/pdfs/engineering-samples'
-```
+- `agent_system.py`: page packets, stable IDs and ledger closure.
+- `orchestration_harness.py`: immutable stage identity and handoff validation.
+- `multimodal_plan.py`: strict plan validation and executor handoff.
+- `supervisor_contract.py` / `supervisor_bundle.py`: verified supervisor proof.
+- `authorization.py`: non-bypassable render and release authorization.
+- `overlay_pair.py` / `panel_reflow.py`: deterministic PDF execution.
+- `visual_qa.py`: rendered-page diagnostics.
 
-## Benchmark workflow
-
-The benchmark is separate from production translation. Its default workspace is
-`output/pdf/engineering-drawing/benchmark`; it never writes delivery PDFs to
-`01_Bilingual_Inline/translated`.
-
-Lifecycle:
-
-1. `benchmark-seed` freezes the approved 12 source pages and hashes.
-2. `benchmark-prelabel` asks the Sol multimodal model for semantic blocks,
-   translations, layout constraints, and uncertainty flags.
-3. A reviewer resolves the items in `adjudication-queue.json`, records reasons,
-   and saves the resulting decisions JSON.
-4. `benchmark-adjudicate --lock` creates an audited `gold.locked.json`.
-5. `benchmark-visual-review` records the Sol model, prompt version, page-layout
-   score, readability score, and auditable findings for each candidate page.
-   It atomically publishes a companion `*.evidence.json` containing SHA-256
-   bindings for the benchmark version, canonical manifest record, frozen
-   source and preview, locked gold, candidate PDF, regions, placement audit,
-   review, and exact one-page media/crop/rotation/dimension identity.
-6. `benchmark-evaluate` applies hard gates, weighted scoring, visual
-   comparisons, and version-promotion rules. Evaluation rejects stale or
-   structurally inconsistent evidence and transactionally replaces the report
-   and comparison trees only after every sample is validated and rendered.
-   Visible-translation gates correlate distributed final-raster ink with each
-   declared Chinese glyph box and reject later opaque overpaint by PDF drawing
-   order. Leader gates allow only 0.05-point endpoint contact with the leader's
-   own source/target boxes, then test the full route against source obstacles,
-   forbidden zones, other captions, and other leaders.
-   A generated `benchmark-report.json` can be supplied as the next
-   `--baseline-report`; promotion is accepted only when its manifest digest and
-   complete sample/set/category/challenge universe match.
-
-The seed command creates only frozen benchmark inputs:
-
-```powershell
-python -m services.engineering_drawing benchmark-seed `
-  --source-root 'D:\AmyProjects\business\WROK-CONTENT\malasia' `
-  --workspace 'output/pdf/engineering-drawing/benchmark'
-```
-
-Model-backed prelabel and visual-review commands must only be run with approved
-model budget. Lifecycle commands refuse to overwrite prelabels, visual reviews,
-or gold artifacts; adjudication remains append-only by requiring a fresh
-workspace state. Every lifecycle transition also requires exact frozen-page
-media box, crop box, size, and rotation identity. Seed inputs use the same
-closed cross-platform path, page, and goal validator as later evaluation.
-Never run `batch-translate` as part of benchmark construction, annotation, or
-evaluation.
+Dev scripts may create candidates, but no dev script may fabricate a final
+review or copy a candidate into the production directory without authorization.

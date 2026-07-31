@@ -163,8 +163,9 @@ def build_prelabel_request(
         "route:'orthogonal',arrow:false}. Group complete notes/specifications by meaning, but keep "
         "equipment IDs, table cells, legend entries, dimensions, and title rows separate. Preserve "
         "all numbers, units, models, IDs, and source rotation. Propose whitespace allowed_regions "
-        "and source/dimension/line forbidden_zones. Prefer right, then below, then above; use an "
-        "orthogonal leader only for dense CAD labels."
+        "and source/dimension/line forbidden_zones. Score nearby candidate sides as a complete "
+        "semantic group; do not use a fixed direction priority. Use an orthogonal or diagonal "
+        "leader only when it keeps the group nearby."
     )
     return [
         {"role": "system", "content": rules},

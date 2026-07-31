@@ -1,0 +1,308 @@
+{
+  "schema": "engineering-drawing-semantic-extension-v1",
+  "locale": "zh-CN",
+  "purpose": "Cross-discipline engineering drawing semantics for multimodal planning, OCR reconciliation, translation coverage and placement.",
+  "source_references": [
+    {
+      "authority": "ISO",
+      "reference": "ISO 128-1:2020",
+      "url": "https://www.iso.org/standard/65296.html",
+      "used_for": ["general representation", "drawing hierarchy", "cross-discipline applicability"]
+    },
+    {
+      "authority": "ISO",
+      "reference": "ISO 128-3:2022",
+      "url": "https://www.iso.org/standard/83356.html",
+      "used_for": ["views", "sections", "cuts", "reference relationships"]
+    },
+    {
+      "authority": "ISO",
+      "reference": "ISO 129-1:2018",
+      "url": "https://www.iso.org/standard/64007.html",
+      "used_for": ["dimensions", "tolerances", "dimension-symbol protection"]
+    },
+    {
+      "authority": "ISO",
+      "reference": "ISO construction drawing catalogue",
+      "url": "https://www.iso.org/ics/01.100.30/x/",
+      "used_for": ["title blocks", "drawing sheets", "reference grids", "construction drawing organization"]
+    },
+    {
+      "authority": "NIBS",
+      "reference": "United States National CAD Standard - Uniform Drawing System",
+      "url": "https://www.nationalcadstandard.org/ncs5/about.php",
+      "used_for": ["sheet organization", "symbols", "notations", "schedules"]
+    },
+    {
+      "authority": "IEC",
+      "reference": "IEC 60617",
+      "url": "https://library.iec.ch/iec60617",
+      "used_for": ["electrotechnical graphical symbols", "symbol-label separation"]
+    },
+    {
+      "authority": "SAMR",
+      "reference": "GB/T 4728.1-2018",
+      "url": "https://std.samr.gov.cn/gb/search/gbDetailed?id=Bncn2PQXxiQ%3D&mode=p",
+      "used_for": ["electrical diagram symbols", "symbol attributes", "symbol and annotation separation"]
+    },
+    {
+      "authority": "SAMR",
+      "reference": "GB/T 4728.7-2022",
+      "url": "https://std.samr.gov.cn/gb/search/gbDetailed?id=EB58F4DA9044B2A2E05397BE0A0A7D33",
+      "used_for": ["switching devices", "control devices", "protection devices"]
+    },
+    {
+      "authority": "SAMR",
+      "reference": "GB/T 6988.1-2024",
+      "url": "https://openstd.samr.gov.cn/bzgk/std/std_list?p.p1=0&p.p2=GB%2FT+6988&p.p90=circulation_date&p.p91=desc",
+      "used_for": ["electrotechnical document rules", "functional diagrams", "connection-document organization"]
+    },
+    {
+      "authority": "ASHRAE",
+      "reference": "ASHRAE Terminology",
+      "url": "https://www.ashrae.org/technical-resources/authoring-tools/terminology",
+      "used_for": ["HVAC", "building systems", "energy and water terminology"]
+    },
+    {
+      "authority": "ISO",
+      "reference": "ISO 1219-1 and ISO 1219-2",
+      "url": "https://www.iso.org/standard/60184.html",
+      "used_for": ["fluid-power symbols", "circuit and connection relationships"]
+    }
+  ],
+  "drawing_families": {
+    "architectural": {
+      "page_types": ["floor plan", "roof plan", "elevation", "section", "detail", "door schedule", "window schedule", "finish schedule"],
+      "object_groups": ["space", "opening", "wall", "roof", "stair", "finish", "detail callout"],
+      "mandatory_semantics": ["room function", "material", "construction method", "direction", "slope", "section/detail reference"]
+    },
+    "structural": {
+      "page_types": ["foundation plan", "framing plan", "reinforcement detail", "section", "bar schedule"],
+      "object_groups": ["footing", "pile", "column", "beam", "slab", "reinforcement", "joint"],
+      "mandatory_semantics": ["member type", "material grade", "reinforcement instruction", "level", "section/detail reference"]
+    },
+    "mechanical_hvac": {
+      "page_types": ["equipment layout", "duct layout", "pipe layout", "schematic", "equipment schedule", "detail"],
+      "object_groups": ["AHU", "FCU", "VRV", "condenser", "fan", "duct", "diffuser", "damper", "refrigerant pipe", "condensate pipe"],
+      "mandatory_semantics": ["equipment function", "airflow direction", "pipe purpose", "from/to relation", "insulation", "drainage"]
+    },
+    "plumbing_fire": {
+      "page_types": ["water supply plan", "sanitary plan", "drainage plan", "fire protection plan", "riser diagram", "schematic"],
+      "object_groups": ["water pipe", "waste pipe", "vent", "drain", "valve", "pump", "tank", "sprinkler", "hydrant"],
+      "mandatory_semantics": ["service type", "flow direction", "invert/level", "connection", "valve function", "from/to relation"]
+    },
+    "electrical": {
+      "page_types": ["single line diagram", "power layout", "lighting layout", "earthing layout", "protection schematic", "cable schedule"],
+      "object_groups": ["busbar", "feeder", "transformer", "circuit breaker", "isolator", "CT", "VT", "relay", "earthing", "load"],
+      "mandatory_semantics": ["incoming/outgoing", "voltage level", "equipment function", "protection function", "connection hierarchy", "source/load relation"]
+    },
+    "civil_site": {
+      "page_types": ["site plan", "setting-out plan", "road plan", "drainage plan", "grading plan", "utility plan"],
+      "object_groups": ["boundary", "setback", "road", "contour", "drain", "manhole", "utility", "slope"],
+      "mandatory_semantics": ["location", "direction", "level", "gradient", "boundary/setback purpose", "utility type"]
+    }
+  },
+  "terminology": {
+    "PLAN": "平面图",
+    "ELEVATION": "立面图",
+    "SECTION": "剖面图",
+    "DETAIL": "详图",
+    "SCHEDULE": "表",
+    "TYPICAL": "典型",
+    "NOT TO SCALE": "不按比例",
+    "EXISTING": "现有",
+    "PROPOSED": "拟建",
+    "DEMOLISH": "拆除",
+    "FINISH": "饰面",
+    "CORNER BEAD": "护角条",
+    "WATER DRIP LINE": "滴水线",
+    "SKIM COAT": "薄抹灰层",
+    "RENDERING": "抹灰",
+    "DOOR": "门",
+    "WINDOW": "窗",
+    "FRAME": "框",
+    "LEAF": "扇",
+    "LOCKSET": "锁具",
+    "HINGE": "合页",
+    "GLAZING": "玻璃",
+    "BEAM": "梁",
+    "COLUMN": "柱",
+    "SLAB": "板",
+    "FOOTING": "基础",
+    "REINFORCEMENT": "钢筋",
+    "CONCRETE": "混凝土",
+    "DUCT": "风管",
+    "DIFFUSER": "散流器",
+    "DAMPER": "风阀",
+    "SUPPLY AIR": "送风",
+    "RETURN AIR": "回风",
+    "EXHAUST AIR": "排风",
+    "WATER SUPPLY": "给水",
+    "WASTE": "污水",
+    "VENT": "通气",
+    "DRAIN": "排水",
+    "INVERT LEVEL": "管底标高",
+    "VALVE": "阀门",
+    "SPRINKLER": "喷淋头",
+    "HYDRANT": "消火栓",
+    "SINGLE LINE DIAGRAM": "单线图",
+    "BUSBAR": "母线",
+    "FEEDER": "馈线",
+    "TRANSFORMER": "变压器",
+    "CIRCUIT BREAKER": "断路器",
+    "ISOLATOR": "隔离开关",
+    "DISCONNECTOR": "隔离开关",
+    "CURRENT TRANSFORMER": "电流互感器",
+    "VOLTAGE TRANSFORMER": "电压互感器",
+    "PROTECTION RELAY": "保护继电器",
+    "CURRENT TRANSFORMER RATIO": "电流互感器变比",
+    "VOLTAGE TRANSFORMER RATIO": "电压互感器变比",
+    "ACCURACY CLASS": "准确级",
+    "PROTECTION CLASS": "保护级",
+    "RATED BURDEN": "额定负荷",
+    "KNEE POINT VOLTAGE": "拐点电压",
+    "EXCITATION CURRENT": "励磁电流",
+    "SECONDARY WINDING RESISTANCE": "二次绕组电阻",
+    "SHORT-TIME WITHSTAND CURRENT": "短时耐受电流",
+    "WITHSTAND TIME": "耐受时间",
+    "VECTOR GROUP": "接线组别",
+    "RATED CAPACITY": "额定容量",
+    "CABLE LAID IN TRENCHES": "电缆敷设于电缆沟",
+    "XLPE": "交联聚乙烯绝缘",
+    "AWA": "铝线铠装",
+    "PVC": "聚氯乙烯护套",
+    "COPPER CONDUCTOR": "铜芯导体",
+    "EARTHING": "接地",
+    "INCOMING": "进线",
+    "OUTGOING": "出线",
+    "SETBACK": "退界",
+    "CONTOUR": "等高线",
+    "MANHOLE": "检查井",
+    "ROAD LEVEL": "道路标高"
+  },
+  "relation_types": {
+    "direction": ["FLOW", "FALL", "SUPPLY", "RETURN", "EXHAUST", "INCOMING", "OUTGOING"],
+    "connectivity": ["CONNECTED TO", "FROM", "TO", "RISING", "DROPPING", "CONTINUED"],
+    "vertical": ["ABOVE", "BELOW", "UP", "DOWN", "LEVEL", "ELEVATION", "INVERT"],
+    "reference": ["SECTION", "DETAIL", "VIEW", "SHEET", "GRID"],
+    "slope": ["PITCH", "FALL", "GRADIENT", "DEGREE", "PERCENT"],
+    "electrical_hierarchy": ["SOURCE", "BUSBAR", "FEEDER", "PROTECTION", "LOAD"]
+  },
+  "supervisor_rules": [
+    "Build a page object graph before translation: visible text, symbols, arrows, leaders, equipment, table cells and title-panel zones.",
+    "Compare multimodal observations with OCR/PDF text. The union is the candidate inventory; OCR absence is never an exemption.",
+    "Resolve each candidate as natural language, functional abbreviation, proper name, identifier/value, or graphical symbol.",
+    "Translate natural language and functional abbreviations. Preserve identifiers and numeric values while translating their descriptors.",
+    "Treat arrowhead, leader, slope mark, electrical connection and section/detail bubble as part of the same semantic block as its label.",
+    "For a single-line diagram, plan translations without crossing or hiding conductive paths, protection symbols or source-load hierarchy.",
+    "For schedules, segment by ruled cell, item number, equipment/drawing number and typography. Never merge adjacent rows merely because prose continues.",
+    "For architectural details, translate image-embedded captions and product notes even when OCR misses them.",
+    "For every page, produce a coverage ledger with source anchor, semantic class, translation decision, placement decision and literal-only reason when exempted."
+  ],
+  "typography_rules": [
+    "Preserve semantic hierarchy: title, section heading, item heading, body note, dimension and identifier must remain visually distinguishable.",
+    "Match boldness, relative size, alignment and rotation of the source role; Chinese may use a compatible CJK font.",
+    "A bold source heading requires a bold Chinese companion or bilingual reflow heading.",
+    "Do not enlarge body translations until they compete with source titles or drawing numbers.",
+    "When space is limited, wrap first, compress line spacing second, permit slight auxiliary-line overlap third, and reduce font size only last.",
+    "Do not assign one Chinese font size to a full page. Plan font size per semantic block from source hierarchy, available area and delivery-scale readability.",
+    "Candidate visual ratios are: equipment or circuit name 75%-90% of source glyph height, key rated values 65%-80%, multiline parameter explanation 50%-70%, code or terminal gloss 45%-60%. These are planning ranges, not permission to create unreadable microtext.",
+    "A representative full explanation must remain more prominent than abbreviated labels on repeated identical devices."
+  ],
+  "placement_rules": [
+    "Multimodal visual planning outranks OCR ink occupancy when the rendered page visibly contains usable whitespace.",
+    "Keep translations in the immediate local group. Prefer a short leader; do not use a long leader merely to avoid minor CAD-line overlap.",
+    "Allow left, right, above, below or angled placement. Preserve the source text and do not fully cover it inside the drawing body.",
+    "For non-drawing panels and schedules, remove only the intended text layer/region and re-typeset source plus Chinese in black while preserving borders, logos and identifiers.",
+    "All visible non-Chinese natural-language instances are mandatory, including microtext at or below the visual size of FLOW labels.",
+    "A translation may lightly cross auxiliary lines, pale equipment boxes or minor CAD geometry, but may not hide conductive paths, junctions, switch states, terminal identifiers or key numeric values."
+  ],
+  "electrical_parameter_templates": {
+    "current_transformer": {
+      "required_fields": ["ratio", "accuracy_or_protection_class", "rated_burden", "Vk", "excitation_current", "secondary_winding_resistance", "winding_purpose"],
+      "field_labels_zh": {
+        "ratio": "CT变比",
+        "accuracy_or_protection_class": "准确级／保护级",
+        "rated_burden": "额定负荷",
+        "Vk": "拐点电压",
+        "excitation_current": "励磁电流",
+        "secondary_winding_resistance": "二次绕组电阻",
+        "winding_purpose": "绕组用途"
+      },
+      "grouping_rule": "Treat consecutive CT lines as one parameter block and preserve every numeric value, unit and inequality."
+    },
+    "voltage_transformer": {
+      "required_fields": ["ratio", "accuracy_or_protection_class", "rated_burden", "winding_purpose"],
+      "field_labels_zh": {
+        "ratio": "PT／VT变比",
+        "accuracy_or_protection_class": "准确级／保护级",
+        "rated_burden": "额定负荷",
+        "winding_purpose": "绕组用途"
+      }
+    },
+    "power_transformer": {
+      "required_fields": ["high_low_voltage", "rated_capacity", "vector_group", "impedance", "cooling"],
+      "field_labels_zh": {
+        "high_low_voltage": "高／低压",
+        "rated_capacity": "额定容量",
+        "vector_group": "接线组别",
+        "impedance": "阻抗",
+        "cooling": "冷却方式"
+      }
+    },
+    "cable": {
+      "required_fields": ["set_count", "core_count", "cross_section", "insulation", "armour", "sheath", "conductor", "installation_method"],
+      "field_labels_zh": {
+        "set_count": "组数",
+        "core_count": "芯数",
+        "cross_section": "截面",
+        "insulation": "绝缘",
+        "armour": "铠装",
+        "sheath": "护套",
+        "conductor": "导体",
+        "installation_method": "敷设方式"
+      }
+    },
+    "earthing_device": {
+      "required_fields": ["rated_current", "resistance", "withstand_time", "protection_code"],
+      "field_labels_zh": {
+        "rated_current": "额定电流",
+        "resistance": "接地电阻",
+        "withstand_time": "耐受时间",
+        "protection_code": "保护功能代号"
+      }
+    },
+    "switchgear": {
+      "required_fields": ["rated_voltage", "rated_current", "short_circuit_current", "withstand_time", "class"],
+      "field_labels_zh": {
+        "rated_voltage": "额定电压",
+        "rated_current": "额定电流",
+        "short_circuit_current": "短路电流",
+        "withstand_time": "耐受时间",
+        "class": "等级"
+      }
+    }
+  },
+  "electrical_code_policy": {
+    "page_legend_allowed": ["P1", "P2", "M", "64REF/HV", "64REF/LV", "64SBEF", "87T", "52CBM", "BBLO"],
+    "literal_identifiers": ["D07", "D08", "D09", "D10"],
+    "uncertain_project_code_rule": "Preserve the exact code, label it as a project function code or manual review item, and never invent an expansion.",
+    "parameter_code_rule": "CL.PX, 5P20, 0.2, VA, Vk, Rct and Im are semantic parameter fields and require Chinese explanation; they are not exempt model numbers."
+  },
+  "repetition_strategy": {
+    "name": "full-plus-compact",
+    "full_requirement": "At least one representative instance or same-page legend contains the complete field explanation.",
+    "compact_requirement": "An identical repeated instance may use a compact label only when every parameter value, class and purpose matches the full instance.",
+    "difference_rule": "Any changed value, class, purpose or winding requires its own explicit Chinese difference label."
+  },
+  "reverse_reading_test": {
+    "questions": [
+      "What engineering object is this?",
+      "What are its rated values?",
+      "For CT/PT, what are the ratio, class, burden and key excitation limits?",
+      "What is its protection, measurement or switching purpose?",
+      "Which bay, feeder or equipment group does it belong to?"
+    ],
+    "failure_rule": "If Chinese plus preserved numbers and codes cannot answer the applicable questions without reading the English prose, treat the page as under-translated."
+  }
+}

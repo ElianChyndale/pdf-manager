@@ -3,7 +3,7 @@ from __future__ import annotations
 """Strict translation and semantic QA for engineering-drawing OCR regions.
 
 This module deliberately treats the OCR result as an auditable source inventory.
-It does not use a legacy PDF as translation memory: every visible Latin-script
+It does not use a legacy PDF as translation memory: every visible natural-language
 candidate must receive a Chinese companion, be classified as non-language noise,
 or be reported as a blocking review item.  A partial LLM response is never
 silently treated as success.
@@ -12,9 +12,10 @@ silently treated as success.
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from foundation.shared.prompt_loader import load_prompt
 from services.translation.llm.shared.provider_runtime import DEFAULT_BASE_URL
@@ -25,6 +26,25 @@ from services.translation.llm.shared.response_parsing import extract_json_text
 
 _LATIN_RE = re.compile(r"[A-Za-z]")
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_SCRIPT_NAME_HINTS = (
+    "ARABIC",
+    "HEBREW",
+    "CYRILLIC",
+    "GREEK",
+    "DEVANAGARI",
+    "BENGALI",
+    "GURMUKHI",
+    "GUJARATI",
+    "TAMIL",
+    "TELUGU",
+    "KANNADA",
+    "MALAYALAM",
+    "THAI",
+    "LAO",
+    "GEORGIAN",
+    "ARMENIAN",
+    "ETHIOPIC",
+)
 _WHITESPACE_RE = re.compile(r"\s+")
 _PRESERVED_TOKEN_RE = re.compile(
     r"(?:[A-Za-z]+[-_/]?[A-Za-z]*\d+[A-Za-z0-9./×xØø+\-]*|"
@@ -44,6 +64,11 @@ _LITERAL_DESCRIPTOR_OVERRIDES = {
     "lv": "低压（原文：LV）",
     "elec": "电气（原文：ELEC）",
     "mech": "机械（原文：MECH）",
+    "fall": "排水坡向（原文：FALL）",
+    "flow": "流向（原文：FLOW）",
+    "pitch": "坡度（原文：PITCH）",
+    "roof": "屋面（原文：ROOF）",
+    "void": "挑空（原文：VOID）",
 }
 _NATURAL_LANGUAGE_HINTS = {
     "jalan", "taman", "kampung", "bandar", "johor", "selangor", "kuala", "level",
@@ -70,6 +95,8 @@ def _source_text(region: dict) -> str:
 
 def _requires_natural_language_translation(source_text: str) -> bool:
     """Override a permissive OCR/code classifier for readable prose/address text."""
+    if _has_non_latin_language_script(source_text):
+        return True
     words = re.findall(r"[A-Za-z]{3,}", str(source_text or "").casefold())
     if any(word in _NATURAL_LANGUAGE_HINTS for word in words):
         return True
@@ -78,21 +105,38 @@ def _requires_natural_language_translation(source_text: str) -> bool:
     return len(words) >= 2 and any(len(word) >= 4 for word in words)
 
 
-def _is_latin_candidate(region: dict) -> bool:
+def _has_non_latin_language_script(source: str) -> bool:
+    for char in str(source or ""):
+        if char.isspace() or unicodedata.category(char).startswith("P"):
+            continue
+        name = unicodedata.name(char, "")
+        if any(hint in name for hint in _SCRIPT_NAME_HINTS):
+            return True
+    return False
+
+
+def _is_language_candidate(region: dict) -> bool:
     source = _source_text(region)
-    if not _LATIN_RE.search(source):
-        return False
-    # OCR occasionally labels mixed English/CJK title-block strings as Chinese.
-    # Latin evidence wins for the coverage inventory so those strings cannot be
-    # dropped merely because a Chinese character appears next to them.
-    return True
+    if _LATIN_RE.search(source) or _has_non_latin_language_script(source):
+        # OCR occasionally labels mixed English/CJK title-block strings as
+        # Chinese. Latin or a recognised non-CJK script wins for the coverage
+        # inventory so those strings cannot be dropped accidentally.
+        return True
+    return False
+
+
+# Kept as a compatibility alias for callers that used the old private helper.
+_is_latin_candidate = _is_language_candidate
 
 
 def _language(region: dict) -> str:
     value = str(region.get("source_language") or "").strip().lower()
-    if value in {"en", "ms", "mixed"}:
+    if value in {"en", "ms", "mixed", "ar", "jawi", "other"}:
         return value
-    return "mixed" if _CJK_RE.search(_source_text(region)) else "en"
+    source = _source_text(region)
+    if _has_non_latin_language_script(source):
+        return "other"
+    return "mixed" if _CJK_RE.search(source) else "en"
 
 
 def _cache_key(*, source_text: str, source_language: str, action_hint: str, model: str, base_url: str) -> str:
@@ -130,22 +174,45 @@ def _save_cache(path: Path | None, entries: dict[str, dict]) -> None:
     )
 
 
-def _translation_messages(items: list[dict]) -> list[dict[str, str]]:
+def _translation_messages(
+    items: list[dict],
+    *,
+    supervisor_tasks: list[dict] | None = None,
+) -> list[dict[str, str]]:
     profile = load_prompt("rule_profile_engineering_drawing.txt")
     system = f"""You are the translation stage of a strict engineering-drawing production system.
 
 {profile}
 
 Return one JSON object only, with a `translations` array. Every requested item_id
-must occur exactly once; never add, omit, merge, or split IDs. Each entry must be:
+must occur exactly once; never add, omit, merge, or split IDs. Each item_id is a
+semantic block, not an individual OCR word. Reconstruct the complete source
+phrase before translating it and return one coherent Chinese block for that item.
+Each entry must be:
 {{"item_id":"...","translated_text":"...","action":"translate|keep_literal|review","issues":["..."]}}.
 
-All visible English or Malay content is mandatory. For drawing/model/equipment codes,
+All visible natural-language content is mandatory, including English, Malay,
+Arabic, Jawi and other scripts. For drawing/model/equipment codes,
 preserve the literal unchanged and provide a concise Chinese semantic companion,
 for example AHU-01 -> 空气处理机编号：AHU-01. Do not return an empty translation
 for a Latin-script item. Preserve numbers, dimensions, units, scale ratios, drawing
 codes and standards verbatim. If OCR text is genuinely unreadable, return a concise
-Chinese OCR-review descriptor plus action `review`, rather than silently omitting it."""
+Chinese OCR-review descriptor plus action `review`, rather than silently omitting it.
+For genuinely unreadable text, keep the original source visible and defer the
+meaning decision to multimodal model review; never replace it with a guessed
+technical translation.
+Preserve line order for wrapped notes and do not merge independent IDs, dimensions,
+schedule rows, or title-block fields. FLOW, FALL, PITCH, ROOF and VOID are
+natural-language engineering labels, never model codes. If the supervisor binds
+an arrow, slope mark, degree value or FROM/TO direction to a block, preserve that
+relationship in the Chinese translation rather than translating the word alone."""
+    if supervisor_tasks:
+        system += """
+
+The multimodal page supervisor issued the following translation-task directives.
+Treat them as the manager's instructions for grouping, terminology, and
+completeness; do not replace them with word-level OCR decisions:
+""" + json.dumps(supervisor_tasks, ensure_ascii=False)
     return [
         {"role": "system", "content": system},
         {
@@ -178,10 +245,12 @@ def _repair_messages(items: list[dict]) -> list[dict[str, str]]:
 The previous candidate contained no Chinese, so it is not an acceptable final
 translation. Return one JSON object only, with a `translations` array. Every
 requested item_id must occur exactly once, without merging or splitting IDs.
-Each entry must be:
+Each item_id is a semantic block, not an individual OCR word. Repair the whole
+phrase as one readable Chinese block and preserve its line order. Each entry must be:
 {{"item_id":"...","translated_text":"...","action":"translate|keep_literal|review","issues":["..."]}}.
 
-Write a complete Simplified-Chinese companion for every readable English/Malay
+Write a complete Simplified-Chinese companion for every readable natural-language
+source in English, Malay, Arabic, Jawi or another script
 word, including company names, addresses, titles and small drawing notes. Keep
 numbers, dimensions, units and drawing/model identifiers verbatim. If the source
 is genuinely unreadable OCR, return a Chinese OCR-review descriptor with action
@@ -209,12 +278,14 @@ include `私人有限公司`. An English/Malay-only result is invalid."""
 def _qa_messages(items: list[dict]) -> list[dict[str, str]]:
     system = """You are the independent semantic quality gate for bilingual engineering drawings.
 Return one JSON object only, with a `reviews` array. Every requested item_id must
-occur exactly once; never add, omit, merge, or split IDs. Each entry must be:
+occur exactly once; never add, omit, merge, or split IDs. Each item_id represents
+one semantic block. Judge the block as a whole; a word-by-word fragment is not a
+complete translation. Each entry must be:
 {"item_id":"...","verdict":"accepted|corrected|manual_review|not_language|missing_translation",
 "translated_text":"...","issues":["..."]}.
 
-Check source-to-Chinese alignment, completeness, engineering terminology, English or
-Malay residue, and preservation of every number/unit/model/drawing code. A code is
+Check source-to-Chinese alignment, completeness, engineering terminology, residual
+source-language text, and preservation of every number/unit/model/drawing code. A code is
 acceptable only when the candidate includes a Chinese descriptor and preserves the
 original literal. Use `corrected` and supply a complete replacement when needed.
 Use `manual_review` for genuine OCR ambiguity. Use `missing_translation` for an
@@ -454,6 +525,7 @@ def translate_and_judge_engineering_regions(
     cache_path: Path | None = None,
     batch_size: int = 32,
     request_chat_content_fn: ChatRequester = request_chat_content,
+    supervisor_plan: Mapping[str, object] | None = None,
 ) -> EngineeringTranslationResult:
     """Translate all detected Latin-script regions and return a blocking coverage report.
 
@@ -462,12 +534,17 @@ def translate_and_judge_engineering_regions(
     counted as unresolved so it cannot masquerade as a completed delivery.
     """
     copied_regions = [dict(region) for region in regions]
+    supervisor_translation_tasks = []
+    if isinstance(supervisor_plan, Mapping):
+        raw_tasks = supervisor_plan.get("translation_tasks")
+        if isinstance(raw_tasks, list):
+            supervisor_translation_tasks = [dict(task) for task in raw_tasks if isinstance(task, Mapping)]
     cache = _load_cache(cache_path)
     cache_dirty = False
     unique: dict[str, dict] = {}
     eligible_keys_by_index: dict[int, str] = {}
     for index, region in enumerate(copied_regions):
-        if not _is_latin_candidate(region):
+        if not _is_language_candidate(region):
             region["coverage_status"] = "not_source_language"
             continue
         source = _source_text(region)
@@ -514,7 +591,10 @@ def translate_and_judge_engineering_regions(
         for batch in _batched(to_translate, batch_size):
             parsed, missing, calls, errors = _request_with_missing_retry(
                 items=batch,
-                messages_builder=_translation_messages,
+                messages_builder=lambda items: _translation_messages(
+                    items,
+                    supervisor_tasks=supervisor_translation_tasks,
+                ),
                 response_key="translations",
                 api_key=api_key,
                 model=model,

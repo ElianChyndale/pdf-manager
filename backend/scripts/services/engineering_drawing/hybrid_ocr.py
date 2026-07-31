@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Mapping
 
 import fitz
 from PIL import Image
@@ -312,6 +314,150 @@ def _tile_manifest(image_path: Path, *, output_dir: Path, tile_size: int, overla
     return entries
 
 
+def _supervisor_tasks_for_page(
+    tasks: list[dict],
+    *,
+    page_number: int,
+    requested_page_count: int,
+) -> list[dict]:
+    """Select only the supervisor tasks that belong to one OCR page.
+
+    A page-level handoff may omit ``page_index`` when the caller explicitly
+    executes one page.  Multi-page execution must bind every task to a page so
+    an approved crop can never be silently reused on another page.
+    """
+    selected: list[dict] = []
+    unscoped = False
+    for task in tasks:
+        raw_index = task.get("page_index")
+        if raw_index is None and task.get("page_number") is None:
+            unscoped = True
+            selected.append(task)
+            continue
+        if raw_index is not None:
+            try:
+                task_page = int(raw_index)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"supervisor OCR task {task.get('id') or '<unknown>'} has invalid page_index"
+                ) from error
+        else:
+            try:
+                task_page = int(task.get("page_number")) - 1
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"supervisor OCR task {task.get('id') or '<unknown>'} has invalid page_number"
+                ) from error
+        if task_page < 0:
+            raise ValueError(
+                f"supervisor OCR task {task.get('id') or '<unknown>'} has a negative page index"
+            )
+        if task_page == page_number - 1:
+            selected.append(task)
+    if unscoped and requested_page_count != 1:
+        raise ValueError(
+            "unscoped supervisor OCR tasks are only valid for a one-page execution; "
+            "declare page_index for multi-page execution"
+        )
+    if not selected:
+        raise ValueError(
+            f"approved supervisor plan declares no OCR task for source page {page_number}"
+        )
+    return selected
+
+
+def _supervisor_task_manifest(
+    image_path: Path,
+    *,
+    tasks: list[dict],
+    output_dir: Path,
+    image_width: int,
+    image_height: int,
+) -> list[dict]:
+    """Build OCR inputs from the supervisor's declared visual regions.
+
+    The supervisor owns the page partition.  This helper only converts its
+    normalized display rectangles into raster crops and stores the pixel offset
+    so Paddle detections can be mapped back to page coordinates.  It deliberately
+    does not discover or expand regions from OCR output.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image = Image.open(image_path).convert("RGB")
+    if image.width != image_width or image.height != image_height:
+        image_width, image_height = image.width, image.height
+
+    def raw_bbox(task: Mapping[str, object]) -> list[float] | None:
+        if task.get("full_page") is True:
+            return [0.0, 0.0, 1.0, 1.0]
+        normalized_field = task.get("region_norm")
+        raw = normalized_field or task.get("region") or task.get("crop")
+        if isinstance(raw, Mapping):
+            raw = [
+                raw.get("x0", raw.get("left")),
+                raw.get("y0", raw.get("top")),
+                raw.get("x1", raw.get("right")),
+                raw.get("y1", raw.get("bottom")),
+            ]
+        if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+            return None
+        try:
+            values = [float(value) for value in raw]
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        if normalized_field is not None and not all(0.0 <= value <= 1.0 for value in values):
+            return None
+        if all(0.0 <= value <= 1.0 for value in values):
+            normalized = values
+        else:
+            # A supervisor may explicitly provide display-pixel coordinates.  Do
+            # not guess PDF points here: the page packet is an image contract.
+            normalized = [
+                values[0] / max(1.0, image_width),
+                values[1] / max(1.0, image_height),
+                values[2] / max(1.0, image_width),
+                values[3] / max(1.0, image_height),
+            ]
+        if (
+            not all(0.0 <= value <= 1.0 for value in normalized)
+            or normalized[2] <= normalized[0]
+            or normalized[3] <= normalized[1]
+        ):
+            return None
+        return normalized
+
+    entries: list[dict] = []
+    for index, task in enumerate(tasks, start=1):
+        bbox = raw_bbox(task)
+        if bbox is None:
+            raise ValueError(
+                f"supervisor OCR task {task.get('id') or index} has no valid bounded region_norm/crop"
+            )
+        x0 = max(0, min(image_width - 1, int(round(bbox[0] * image_width))))
+        y0 = max(0, min(image_height - 1, int(round(bbox[1] * image_height))))
+        x1 = max(x0 + 1, min(image_width, int(round(bbox[2] * image_width))))
+        y1 = max(y0 + 1, min(image_height, int(round(bbox[3] * image_height))))
+        task_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(task.get("id") or f"task-{index}"))
+        crop_path = output_dir / f"supervisor-{index:03d}-{task_id}.png"
+        image.crop((x0, y0, x1, y1)).save(crop_path)
+        entries.append(
+            {
+                "id": f"supervisor-{index:03d}-{task_id}",
+                "image_path": str(crop_path),
+                "meta": {
+                    "offset_x": x0,
+                    "offset_y": y0,
+                    "supervisor_task_id": str(task.get("id") or task_id),
+                    "region_norm": bbox,
+                },
+            }
+        )
+    if not entries:
+        raise ValueError("approved supervisor plan must contain at least one OCR task")
+    return entries
+
+
 def _dedupe_visual(regions: list[dict]) -> list[dict]:
     selected: list[dict] = []
     for candidate in sorted(regions, key=lambda item: float(item.get("ocr_confidence", 0) or 0), reverse=True):
@@ -435,6 +581,7 @@ def run_hybrid_ocr(
     end_page: int = -1,
     config: HybridOcrConfig | None = None,
     enable_deepseek: bool = True,
+    supervisor_plan: Mapping[str, object] | None = None,
 ) -> HybridOcrResult:
     config = config or HybridOcrConfig()
     if config.direct_tile_render and enable_deepseek:
@@ -442,6 +589,26 @@ def run_hybrid_ocr(
     pdf_path = Path(pdf_path).resolve()
     cache_dir = Path(cache_dir)
     cache_config = asdict(config)
+    supervisor_tasks = []
+    supervisor_contract_supplied = supervisor_plan is not None
+    if isinstance(supervisor_plan, Mapping):
+        raw_tasks = supervisor_plan.get("ocr_tasks")
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            raise ValueError(
+                "supervisor plan must declare at least one OCR task before execution"
+            )
+        supervisor_tasks = [
+            dict(task) for task in raw_tasks if isinstance(task, Mapping)
+        ]
+        if len(supervisor_tasks) != len(raw_tasks):
+            raise ValueError("supervisor OCR tasks must be objects")
+    elif supervisor_contract_supplied:
+        raise ValueError("supervisor plan must be a mapping")
+    if config.direct_tile_render and supervisor_contract_supplied:
+        raise ValueError(
+            "supervisor OCR tasks require rendered page crops; direct_tile_render "
+            "cannot bypass the supervisor region contract"
+        )
     # Keep the existing primary-pass cache valid after adding the optional
     # direct-tile fallback feature. A false optional flag is semantically the
     # same as the pre-feature configuration and must not re-run 360-DPI OCR.
@@ -449,7 +616,15 @@ def run_hybrid_ocr(
         cache_config.pop("direct_tile_render", None)
     cache_key = hashlib.sha256(
         json.dumps(
-            {"sha256": _sha256(pdf_path), "config": cache_config, "start": start_page, "end": end_page, "deepseek": enable_deepseek},
+            {
+                "sha256": _sha256(pdf_path),
+                "config": cache_config,
+                "start": start_page,
+                "end": end_page,
+                "deepseek": enable_deepseek,
+                "supervisor_ocr_tasks": supervisor_tasks,
+                "ocr_execution_contract": "supervisor_task_crops-v1",
+            },
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
@@ -470,6 +645,17 @@ def run_hybrid_ocr(
     with fitz.open(pdf_path) as document, tempfile.TemporaryDirectory(prefix="engineering-ocr-") as temp:
         temp_dir = Path(temp)
         stop = document.page_count if end_page < 0 else min(document.page_count, end_page)
+        requested_page_count = max(0, stop - max(1, start_page) + 1)
+        executed_supervisor_task_ids: list[str] = []
+        if supervisor_contract_supplied:
+            # Validate page ownership before invoking any OCR subprocess. A
+            # partial multi-page handoff must never produce a partial OCR cache.
+            for planned_page in range(max(1, start_page), stop + 1):
+                _supervisor_tasks_for_page(
+                    supervisor_tasks,
+                    page_number=planned_page,
+                    requested_page_count=requested_page_count,
+                )
         for page_number in range(max(1, start_page), stop + 1):
             page = document[page_number - 1]
             paddle_output = temp_dir / f"page-{page_number:03d}-paddle.json"
@@ -486,12 +672,31 @@ def run_hybrid_ocr(
             else:
                 image_path = temp_dir / f"page-{page_number:03d}.png"
                 width, height = _render_page(page, image_path, config.dpi)
-                paddle_inputs = _tile_manifest(
-                    image_path,
-                    output_dir=temp_dir / f"page-{page_number:03d}-tiles",
-                    tile_size=config.tile_size,
-                    overlap=config.tile_overlap,
-                )
+                if supervisor_contract_supplied:
+                    page_tasks = _supervisor_tasks_for_page(
+                        supervisor_tasks,
+                        page_number=page_number,
+                        requested_page_count=requested_page_count,
+                    )
+                    paddle_inputs = _supervisor_task_manifest(
+                        image_path,
+                        tasks=page_tasks,
+                        output_dir=temp_dir / f"page-{page_number:03d}-supervisor-crops",
+                        image_width=width,
+                        image_height=height,
+                    )
+                    executed_supervisor_task_ids.extend(
+                        str(task.get("id") or "")
+                        for task in page_tasks
+                        if str(task.get("id") or "")
+                    )
+                else:
+                    paddle_inputs = _tile_manifest(
+                        image_path,
+                        output_dir=temp_dir / f"page-{page_number:03d}-tiles",
+                        tile_size=config.tile_size,
+                        overlap=config.tile_overlap,
+                    )
             paddle_manifest.write_text(json.dumps({"items": paddle_inputs}, ensure_ascii=False), encoding="utf-8")
             _run(
                 [
@@ -601,6 +806,31 @@ def run_hybrid_ocr(
         "schema": "engineering_drawing_ocr_v1",
         "source_pdf": str(pdf_path),
         "config": asdict(config),
+        "supervisor_execution": {
+            "manager_role": "multimodal_page_supervisor",
+            "task_count": len(supervisor_tasks),
+            "tasks": supervisor_tasks,
+            "consumed_before_execution": bool(supervisor_tasks),
+            "ocr_execution_mode": (
+                "supervisor_declared_task_crops"
+                if supervisor_contract_supplied
+                else "legacy_full_page_or_tile_scan"
+            ),
+            "unplanned_full_page_scan": not supervisor_contract_supplied,
+            "executed_task_ids": executed_supervisor_task_ids,
+            "region_authority": (
+                "multimodal_supervisor"
+                if supervisor_contract_supplied
+                else "legacy_executor"
+            ),
+            "base_pass": {
+                "engine": "PaddleOCR",
+                "dpi": config.dpi,
+                "tile_size": config.tile_size,
+                "tile_overlap": config.tile_overlap,
+            },
+            "deepseek_review_enabled": enable_deepseek,
+        },
         "regions": all_regions,
         "stats": {
             "region_count": len(all_regions),

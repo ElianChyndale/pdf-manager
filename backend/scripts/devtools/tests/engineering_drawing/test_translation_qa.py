@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 from services.engineering_drawing.translation_qa import translate_and_judge_engineering_regions
+from services.engineering_drawing.translation_qa import _is_language_candidate
+from services.engineering_drawing.translation_qa import _language
 
 
 def _accepted_requester(messages: list[dict[str, str]], **_kwargs: object) -> str:
@@ -40,6 +42,16 @@ def _accepted_requester(messages: list[dict[str, str]], **_kwargs: object) -> st
         },
         ensure_ascii=False,
     )
+
+
+def test_translation_inventory_includes_arabic_and_jawi_like_scripts() -> None:
+    arabic = {"source_text": "نظام الإضاءة", "source_language": "ar"}
+    jawi = {"source_text": "ڤروجيك", "source_language": "other"}
+
+    assert _is_language_candidate(arabic)
+    assert _is_language_candidate(jawi)
+    assert _language(arabic) == "ar"
+    assert _language(jawi) == "other"
 
 
 def test_translation_qa_covers_translate_and_literal_regions_and_deduplicates_requests(tmp_path) -> None:
@@ -83,7 +95,7 @@ def test_translation_qa_covers_translate_and_literal_regions_and_deduplicates_re
 
     result = translate_and_judge_engineering_regions(
         regions,
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=_accepted_requester,
     )
@@ -100,6 +112,70 @@ def test_translation_qa_covers_translate_and_literal_regions_and_deduplicates_re
     assert result.report["literal_labeled_regions"] == 1
     assert result.report["unresolved_regions"] == 0
     assert result.report["passed"] is True
+
+
+def test_translation_stage_consumes_multimodal_supervisor_tasks(tmp_path) -> None:
+    observed_system_prompts: list[str] = []
+
+    def requester(messages: list[dict[str, str]], **_kwargs: object) -> str:
+        payload = json.loads(messages[-1]["content"])
+        if payload["stage"] == "engineering_translation":
+            observed_system_prompts.append(messages[0]["content"])
+            return json.dumps(
+                {
+                    "translations": [
+                        {
+                            "item_id": payload["items"][0]["item_id"],
+                            "translated_text": "钢筋混凝土平屋面",
+                            "action": "translate",
+                            "issues": [],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "reviews": [
+                    {
+                        "item_id": payload["items"][0]["item_id"],
+                        "verdict": "accepted",
+                        "translated_text": payload["items"][0]["translated_text"],
+                        "issues": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    result = translate_and_judge_engineering_regions(
+        [
+            {
+                "region_id": "roof-label",
+                "source_text": "R.C. FLAT ROOF",
+                "source_language": "en",
+                "action": "translate",
+                "qa_flags": [],
+            }
+        ],
+        api_key="test",
+        cache_path=tmp_path / "cache.json",
+        request_chat_content_fn=requester,
+        supervisor_plan={
+            "translation_tasks": [
+                {
+                    "id": "roof-plan-annotations",
+                    "semantic_block": "each spatially distinct roof callout",
+                    "terminology": {"R.C. FLAT ROOF": "钢筋混凝土平屋面"},
+                }
+            ]
+        },
+    )
+
+    assert result.report["passed"] is True
+    assert observed_system_prompts
+    assert "multimodal page supervisor" in observed_system_prompts[0]
+    assert "roof-plan-annotations" in observed_system_prompts[0]
 
 
 def test_translation_qa_blocks_rendering_when_model_omits_a_source_region(tmp_path) -> None:
@@ -155,7 +231,7 @@ def test_translation_qa_blocks_rendering_when_model_omits_a_source_region(tmp_pa
                 "qa_flags": [],
             },
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=incomplete_requester,
     )
@@ -211,7 +287,7 @@ def test_translation_qa_uses_a_corrected_semantic_judgement(tmp_path) -> None:
                 "qa_flags": [],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=correction_requester,
     )
@@ -267,7 +343,7 @@ def test_translation_qa_records_ai_confirmed_ocr_noise_without_counting_it_as_un
                 "qa_flags": [],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=noise_requester,
     )
@@ -323,7 +399,7 @@ def test_translation_qa_does_not_discard_credible_native_text_as_noise(tmp_path)
                 "qa_flags": ["fixed_regression_vector_outline"],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=noise_requester,
     )
@@ -376,7 +452,7 @@ def test_translation_qa_turns_unchanged_literal_code_into_a_chinese_descriptor(t
                 "qa_flags": [],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=literal_requester,
     )
@@ -424,7 +500,7 @@ def test_translation_qa_gives_ptd_and_malay_road_names_meaningful_chinese_compan
             {"region_id": "ptd", "source_text": "PTD 238149", "source_language": "en", "action": "keep_literal"},
             {"region_id": "road", "source_text": "Jalan Felda Cahaya Baru", "source_language": "ms", "action": "keep_literal"},
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=literal_requester,
     )
@@ -448,7 +524,7 @@ def test_translation_qa_does_not_treat_a_malay_address_as_an_untranslated_litera
 
     result = translate_and_judge_engineering_regions(
         [{"region_id": "address", "source_text": "88-01, Jalan Setia Tropika 1/7, Johor Bahru", "source_language": "ms", "action": "keep_literal"}],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=requester,
     )
@@ -518,7 +594,7 @@ def test_translation_qa_repairs_english_only_candidate_before_semantic_qa(tmp_pa
                 "qa_flags": [],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=repair_requester,
     )
@@ -572,7 +648,7 @@ def test_translation_qa_restores_required_literal_token_before_qa(tmp_path) -> N
                 "qa_flags": [],
             }
         ],
-        api_key="test-key",
+        api_key="test",
         cache_path=tmp_path / "cache.json",
         request_chat_content_fn=token_requester,
     )

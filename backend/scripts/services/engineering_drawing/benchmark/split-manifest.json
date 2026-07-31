@@ -1,0 +1,20 @@
+{
+  "schema": "engineering-drawing-benchmark-split-v1",
+  "benchmark_version": "core-v1",
+  "author": "pdf-manager engineering-drawing team",
+  "created_at": "2026-07-31T00:00:00+00:00",
+  "assignments": {
+    "core-01": "regression",
+    "core-02": "regression",
+    "core-03": "regression",
+    "core-04": "regression",
+    "core-05": "regression",
+    "core-06": "regression",
+    "core-07": "regression",
+    "core-08": "regression",
+    "core-09": "validation",
+    "core-10": "validation",
+    "core-11": "heldout",
+    "core-12": "heldout"
+  }
+}

@@ -1,39 +1,78 @@
-You are translating engineering and construction drawings into Simplified Chinese.
+ENGINEERING DRAWING RULE PROFILE V4.0 — ACTIVE PRODUCTION RULES ONLY
 
-Coverage is mandatory:
-- Translate every English or Malay natural-language string, including drawing titles,
-  notes, legends, callouts, room and equipment names, company names, postal addresses,
-  project parties, professional titles, approval text, and title-block prose.
-- Keep the complete source text visible in bilingual output. Do not treat visible
-  source text as evidence that a region was intentionally left untranslated.
-- Preserve drawing numbers, revision codes, model numbers, dimensions, elevations,
-  quantities, dates, units, standard numbers, coordinates, telephone numbers, email
-  addresses, and URLs exactly. Translate the surrounding labels and prose.
-- Brand marks and registered legal names may be retained literally, but provide a
-  Chinese descriptor or transliteration when they carry natural-language meaning.
+Use workflow version `v4.0-readable-zone-complete`. The only production visual
+supervisor is Codex `gpt-5.6-sol` with light reasoning. Read the original page
+image before OCR. Reference drawings may supply translation wording and indicate
+what needs translation, but never supply pixels, coordinates, font sizes or
+layout.
 
-Engineering terminology:
-- Prefer concise terminology used on Chinese construction drawings.
-- Apply the glossary and translation memory consistently across every file in the
-  batch. Never choose a second Chinese term for the same source term without marking
-  it for review.
-- Malay examples: DEPOH LORI -> 卡车车库; JULAI -> 七月; TANGKI AIR -> 水箱;
-  GARIS ANJAKAN -> 退界线. Keep uncertain abbreviations unchanged and mark review.
-- In Malaysian drawings, `ek` / `ek.` is the abbreviation for `ekar` (acre).
-  Translate its meaning as 英亩 while preserving the original literal, for example
-  `2.02 ek.` -> `2.02 英亩（原文：2.02 ek.）` when it is an area annotation.
-- English examples: distribution water pump -> 配水泵; distribution storage tank ->
-  配水储水罐; treated water tank -> 净水箱; setback line -> 退界线.
-- A personal name plus a professional title is not a company name. Preserve the
-  name and translate the title/role, for example `RICHARD W.Z. LEE ARCHITECT` ->
-  `建筑师：RICHARD W.Z. LEE`; do not invent “事务所” unless the source states it.
+Every source `line_id` must be bound exactly once to a rendered semantic block
+or justified as language-neutral literal. Closure must be 1.0 for the whole page
+and for each zone. Long source paragraphs require proportionate, complete
+Chinese; token labels do not count. Planned blocks and visible CJK ink blocks
+must also close at 1.0.
 
-Quality and safety:
-- Never change a number or unit.
-- Keep source line grouping when it represents one callout or title-block field.
-- Do not invent missing technical meaning. Return a literal translation and mark
-  ambiguous source text for human review.
-- OCR fragments that are likely drawing codes, dimensions, units, or standards are
-  literals, not prose. Preserve them exactly.
-- Text may be small, rotated, embedded in linework, rasterized, or converted to vector
-  outlines. These presentation traits never make natural language optional.
+Terminology evidence must be checked against the visible source and approved
+references; for example, `DEPOH LORI` may be rendered as `货车停车场` when that
+meaning is confirmed. Preserve company names as source text and add the Chinese
+company name or role in the same company cell. Never change a number or unit;
+translate only its surrounding natural-language label when applicable.
+
+Zone execution:
+
+Every translated block selects exactly one mutually exclusive render mode:
+`preserve_source_blue_chinese` keeps source visible, adds nearby blue Chinese,
+and forbids masks; `opaque_bilingual_reflow` removes/covers every old natural-
+language glyph and renders black source plus Chinese, with no old glyph left
+visible. Never partially mask or mix old source with a new bilingual overlay.
+Company panels default to opaque bilingual reflow; drawing body and state
+metadata default to source-preserving blue Chinese. Logo avoidance is a soft
+preference: minor logo overlap alone does not block release.
+
+- `drawing_body` / `drawing_table`: preserve source and engineering graphics;
+  place a complete blue Chinese semantic block nearby, matching local rotation.
+- `directory_index`: every cell containing translatable language contains black source plus Chinese;
+  preserve row numbers, drawing/model codes, sizes, hierarchy and grid.
+  Masks may cover verified natural-language glyph unions only. Mask intersection
+  with row-number, drawing-number and size columns or table rules must be zero;
+  preserve every source row number visibly and keep masks at least 1.5pt from
+  protected fields and rules.
+- `company_contact_panel`: preserve source and logos; translate every role,
+  company, address, phone/fax/email/website field label and qualification line;
+  preserve literal phone numbers, email addresses and URLs unchanged; place
+  black Chinese in each cell's actual non-logo whitespace.
+- `state_bearing_metadata`: preserve source, checkboxes, signatures, dates,
+  revisions, scales and symbols; add nearby blue Chinese.
+- `prose_or_index_metadata`: preserve hierarchy and render complete black
+  bilingual text. Translate every project-list item.
+- `sidebar_footer` is only a parent label and must be subdivided before render.
+
+Typography is a release gate. At 100% review and in 2x crops the Chinese must be
+clearly readable and not microscopic relative to its source. Always use the
+largest size that fits after semantic wrapping and use of a second blank area.
+
+- Directory batch scale 1.20 applied to the source-hierarchy baseline before the
+  largest-fit clamp; preferred minimum 7.2pt; hard minimum 6.8pt;
+  cell padding 1.5–3.0pt; use about 72–90% of usable cell height. Keep text close
+  to its corresponding table boundaries without touching rules.
+  Any clear/redaction/white mask is restricted to a verified natural-language
+  glyph union. It must have zero intersection with row-number, drawing-number
+  and size columns or table rules, and at least 1.5pt clearance from protected
+  structure/field boundaries. Require a mask-vs-protected-columns zero-
+  intersection audit and visually confirm every original row number page by page.
+- Company-panel batch scale 1.18 applied to the source-hierarchy baseline before
+  the largest-fit clamp; preferred minimum 6.8pt; hard minimum 6.4pt;
+  measure every cell independently and never reuse one tiny fixed size.
+- Drawing-body preferred minimum 6.4pt; hard minimum 5.8pt; at least 85% of the
+  corresponding source visual size.
+
+Before shrinking: wrap at semantic boundaries, use nearby or second whitespace,
+then a short leader, then tolerate slight ordinary-line crossing. Never omit or
+shorten meaning to make text fit. Never cover a logo, border, dimension, device,
+wiring, signature or major geometry.
+
+One planning pass, one targeted difference scan, one rendered-page review.
+Repair hard defects locally. Minor density, font variation, and ordinary leader
+crossings are soft findings; omissions, unreadable type, wrong direction, wrong
+zone, incomplete directory/company/project translation, missing CJK ink,
+clipping, garbling and serious damage block release.
