@@ -149,3 +149,23 @@ def test_visual_qa_does_not_count_separated_parallel_leaders_as_crossing() -> No
         ((700.0, 713.0), (700.0, 817.0)),
         ((700.0, 649.0), (820.0, 649.0)),
     )
+
+
+def test_segments_intersect_vertical_crosses_horizontal_midspan() -> None:
+    # The old bug: the vertical x=10 crossed the MIDDLE of a horizontal
+    # 0..20, but only the horizontal start x was compared against the
+    # vertical's x-span, so this genuine crossing was missed.
+    assert _segments_intersect(((10.0, 0.0), (10.0, 10.0)), ((0.0, 5.0), (20.0, 5.0)))
+    assert _segments_intersect(((0.0, 5.0), (20.0, 5.0)), ((10.0, 0.0), (10.0, 10.0)))
+
+
+def test_segments_intersect_horizontal_crosses_vertical_midspan() -> None:
+    assert _segments_intersect(((5.0, 0.0), (5.0, 10.0)), ((0.0, 7.0), (10.0, 7.0)))
+    assert _segments_intersect(((0.0, 7.0), (10.0, 7.0)), ((5.0, 0.0), (5.0, 10.0)))
+
+
+def test_segments_intersect_no_overlap_false() -> None:
+    # Vertical x=10 but horizontal spans only 0..5 -> no x-overlap.
+    assert not _segments_intersect(((10.0, 0.0), (10.0, 10.0)), ((0.0, 5.0), (5.0, 5.0)))
+    # Horizontal y=5 but vertical spans only 0..3 -> no y-overlap.
+    assert not _segments_intersect(((10.0, 0.0), (10.0, 3.0)), ((0.0, 5.0), (20.0, 5.0)))

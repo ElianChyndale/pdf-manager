@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from .cache import load_cache, save_cache, stage_code_fingerprint
 from foundation.shared.prompt_loader import load_prompt
 from services.translation.llm.shared.provider_runtime import DEFAULT_BASE_URL
 from services.translation.llm.shared.provider_runtime import DEFAULT_MODEL
@@ -139,9 +140,23 @@ def _language(region: dict) -> str:
     return "mixed" if _CJK_RE.search(source) else "en"
 
 
+def _translation_stage_fingerprint() -> str:
+    """Hash only the files that affect translation output, not the whole commit."""
+    here = Path(__file__).resolve()
+    prompt_paths = [
+        here.parents[2] / "foundation" / "prompts" / "rule_profile_engineering_drawing.txt",
+        here.parents[2] / "foundation" / "prompts" / "engineering_drawing_supervisor_v37.txt",
+    ]
+    return stage_code_fingerprint(
+        paths=[here, *prompt_paths],
+        extra_payload={"prompt_version": _PROMPT_VERSION},
+    )
+
+
 def _cache_key(*, source_text: str, source_language: str, action_hint: str, model: str, base_url: str) -> str:
     payload = {
         "prompt_version": _PROMPT_VERSION,
+        "stage_fingerprint": _translation_stage_fingerprint(),
         "source_text": _normalized(source_text),
         "source_language": source_language,
         "action_hint": action_hint if action_hint in _ALLOWED_ACTIONS else "translate",
@@ -153,25 +168,11 @@ def _cache_key(*, source_text: str, source_language: str, action_hint: str, mode
 
 
 def _load_cache(path: Path | None) -> dict[str, dict]:
-    if path is None or not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if payload.get("schema") != _CACHE_SCHEMA or not isinstance(payload.get("entries"), dict):
-        return {}
-    return {str(key): dict(value) for key, value in payload["entries"].items() if isinstance(value, dict)}
+    return load_cache(path, schema=_CACHE_SCHEMA)
 
 
 def _save_cache(path: Path | None, entries: dict[str, dict]) -> None:
-    if path is None:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"schema": _CACHE_SCHEMA, "entries": entries}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    save_cache(path, entries, schema=_CACHE_SCHEMA)
 
 
 def _translation_messages(

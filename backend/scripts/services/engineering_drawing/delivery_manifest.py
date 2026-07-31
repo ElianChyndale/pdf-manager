@@ -88,6 +88,9 @@ def build_delivery_manifest(
     prompt_records = {
         name: _file_record(path) for name, path in (prompt_files or {}).items()
     }
+    from .fonts.resolve import font_identity
+
+    font_record = font_identity()
     page_count = _pdf_page_count(Path(candidate_pdf))
     hashes: dict[str, Any] = {
         "source_pdf": source_sha256,
@@ -147,6 +150,7 @@ def build_delivery_manifest(
         "document_context": dict(document_context) if document_context else None,
         "glossary_tm": glossary_records,
         "prompt_versions": prompt_records,
+        "fonts": font_record,
         "operator": dict(operator or {}),
         "timestamps": {
             "started_at": started_at,

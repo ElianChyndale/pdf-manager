@@ -168,18 +168,21 @@ def _stage_payload(
     }
 
 
-def _placement_statuses(placement_audit_path: Path) -> dict[str, str]:
+def _load_placement_items(placement_audit_path: Path) -> list[dict]:
     try:
         payload = json.loads(Path(placement_audit_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return []
     items = payload.get("placements", payload) if isinstance(payload, dict) else payload
     if not isinstance(items, list):
-        return {}
+        return []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _placement_statuses(placement_audit_path: Path) -> dict[str, str]:
     return {
         str(item.get("region_id") or ""): str(item.get("status") or "")
-        for item in items
-        if isinstance(item, dict)
+        for item in _load_placement_items(placement_audit_path)
     }
 
 
@@ -559,6 +562,17 @@ def run_v4_flow(
     _write_json(work_dir / "render-authorization.json", render_authorization)
     _tick("stage3")
 
+    # ---- Pre-render typography gate (V4 path only) -------------------------
+    from .typography_policy import validate_plan_fonts
+
+    plan_font_violations = validate_plan_fonts(plan=plan, renderer=renderer)
+    if plan_font_violations:
+        _write_json(work_dir / "font-floor-violations.json", {"stage": "plan", "violations": plan_font_violations})
+        raise ValueError(
+            "supervisor plan declares fonts below the V4 floor: "
+            + "; ".join(f"{v['region_id']}@{v['zone']}={v['actual_font_size']}<{v['required_floor']}" for v in plan_font_violations)
+        )
+
     # ---- Stage 4: rendered_candidate -------------------------------------
     renderer_fn = RENDERERS.get(renderer)
     if renderer_fn is None:
@@ -579,6 +593,17 @@ def run_v4_flow(
     _write_review_page_images(candidate_pdf, work_dir)
     zone_closure = {block["zone"]: 1.0 for block in blocks}
     hard_findings = list(outcome.hard_findings)
+
+    # ---- Post-render typography gate (V4 path only) ------------------------
+    from .typography_policy import FONT_BELOW_V4_FLOOR, validate_placement_audit_fonts
+
+    font_violations = validate_placement_audit_fonts(
+        placement_audit=_load_placement_items(outcome.placement_audit_path),
+        renderer=renderer,
+    )
+    if font_violations:
+        hard_findings.append(FONT_BELOW_V4_FLOOR)
+        _write_json(work_dir / "font-floor-violations.json", {"stage": "rendered_candidate", "violations": font_violations})
     stage4 = _stage_payload(
         identity=identity,
         stage="rendered_candidate",

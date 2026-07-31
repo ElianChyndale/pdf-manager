@@ -7,6 +7,10 @@ from typing import Any
 
 import fitz
 
+from .fonts.resolve import resolve_cjk_font
+
+# Deprecated alias kept for import compatibility; the V4 render path resolves
+# the bundled project font via fonts.resolve (never the hardcoded Windows path).
 SIMHEI = Path(r"C:\Windows\Fonts\simhei.ttf")
 
 
@@ -50,9 +54,8 @@ def _fit_textbox(
     align: int = fitz.TEXT_ALIGN_LEFT,
 ) -> float:
     if fontname == "simhei":
-        if not SIMHEI.exists():
-            raise FileNotFoundError(f"Required CJK font not found: {SIMHEI}")
-        page.insert_font(fontname="simhei", fontfile=str(SIMHEI))
+        font_path = resolve_cjk_font()
+        page.insert_font(fontname="simhei", fontfile=str(font_path))
     size = max_size
     while size >= min_size:
         shape = page.new_shape()

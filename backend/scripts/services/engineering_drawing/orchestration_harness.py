@@ -70,6 +70,15 @@ HARD_FINDINGS = {
     "unreadable_type",
     "wrong_rotation",
     "serious_visual_damage",
+    # V4 typography gate: a candidate with text below the zone font floor.
+    "font_below_v4_floor",
+    # Production QA: rasterized residual English outside authorized zones.
+    "raster_residual_english",
+    # Geometry integrity: page-count / page-size / severe damage changes.
+    "page_geometry_changed",
+    "severe_page_damage",
+    # Token integrity: real numeric/identifier/unit loss.
+    "token_preservation_failure",
 }
 
 

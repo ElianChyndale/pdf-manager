@@ -129,10 +129,17 @@ def _segments_intersect(
     horizontal = second if first_vertical else first
     (vx0, vy0), (vx1, vy1) = vertical
     (hx0, hy0), (hx1, hy1) = horizontal
+    # The vertical line crosses the horizontal only when the vertical's x falls
+    # within the horizontal segment's x-span (using a small clearance) AND the
+    # horizontal's y falls within the vertical segment's y-span. The previous
+    # check compared `hx0` (the horizontal's start x) against the vertical's
+    # x-span, which missed every genuine mid-segment crossing where the
+    # horizontal did not begin exactly on the vertical line.
+    vx = (vx0 + vx1) / 2
+    hy = (hy0 + hy1) / 2
     return (
-        min(vx0, vx1) <= hx0 <= max(vx0, vx1)
-        and max(min(vy0, vy1), min(hy0, hy1))
-        <= min(max(vy0, vy1), max(hy0, hy1))
+        min(hx0, hx1) - _CLEARANCE <= vx <= max(hx0, hx1) + _CLEARANCE
+        and min(vy0, vy1) - _CLEARANCE <= hy <= max(vy0, vy1) + _CLEARANCE
     )
 
 

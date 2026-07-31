@@ -7,6 +7,10 @@ from typing import Iterable, Mapping
 
 import fitz
 
+from .fonts.resolve import resolve_cjk_font
+
+# Deprecated alias kept for import compatibility; the V4 render path resolves
+# the bundled project font via fonts.resolve (never the hardcoded Windows path).
 SIMHEI = Path(r"C:\Windows\Fonts\simhei.ttf")
 
 
@@ -124,7 +128,7 @@ def _insert_fit(
     rotate: int = 0,
 ) -> bool:
     if fontname == "simhei":
-        page.insert_font(fontname="simhei", fontfile=str(SIMHEI))
+        page.insert_font(fontname="simhei", fontfile=str(resolve_cjk_font()))
     size = start_size
     while size >= minimum_size:
         result = page.insert_textbox(

@@ -38,7 +38,12 @@ _HIGH_RISK_ZONES = {
     "directory_index",
 }
 _CJK_RE = re.compile(r"[㐀-鿿]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+# A "significant" glossary/TM token is one the source shares with the term
+# bank; a single incidental token (e.g. "water") must not mark a phrase as
+# fully recognized when the bulk of it is new.
+_UNSEEN_SIGNIFICANT_TOKENS = 2
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -206,7 +211,12 @@ def build_review_queue(
             risk_factors.append("translation_qa_disagreement")
 
         source_terms = _normalized_terms(source_text)
-        if source_terms and not source_terms.intersection(glossary_terms | tm_sources):
+        known = glossary_terms | tm_sources
+        # n-gram coverage: a phrase is only "recognized" when at least two
+        # significant source tokens (or every token) are in the term bank; a
+        # single incidental shared token must not suppress the flag.
+        significant_unseen = source_terms - known
+        if source_terms and len(significant_unseen) >= _UNSEEN_SIGNIFICANT_TOKENS:
             risk_factors.append("unseen_term")
 
         font_size = placement.get("font_size") if isinstance(placement, dict) else None
@@ -233,7 +243,10 @@ def build_review_queue(
         if region_id in residual_ids:
             risk_factors.append("residual_english")
 
-        if _CJK_RE.search(translated_text) and _CJK_RE.search(source_text):
+        # Length-growth applies to the standard EN->ZH workflow: the source is
+        # Latin (no CJK) and the target is Chinese. The previous gate required
+        # CJK in BOTH, which never fired for native English source text.
+        if _CJK_RE.search(translated_text) and _LATIN_RE.search(source_text):
             growth = len(translated_text) / max(1, len(source_text))
             if growth > 2.5:
                 risk_factors.append("translation_length_growth")

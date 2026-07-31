@@ -31,7 +31,20 @@ def _stub_renderer(
     shutil.copy2(source_pdf, output_pdf)
     audit = output_pdf.with_suffix(".inline-placement.json")
     audit.write_text(
-        json.dumps({"placements": [{"region_id": "b1", "status": "inline_near", "page_index": 0}]}, ensure_ascii=False),
+        json.dumps(
+            {
+                "placements": [
+                    {
+                        "region_id": "b1",
+                        "status": "inline_near",
+                        "page_index": 0,
+                        "font_size": 7.0,  # above the 5.8 body floor
+                        "target_bbox": [10, 10, 40, 25],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     return RendererOutcome(
