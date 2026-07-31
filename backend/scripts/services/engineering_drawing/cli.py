@@ -149,6 +149,34 @@ def _publish_json_exclusive(items: list[tuple[Path, object]]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _add_delivery_run_parser(subparsers: Any) -> None:
+    """Attach the ``delivery-run`` subcommand and its sub-commands."""
+    delivery = subparsers.add_parser(
+        "delivery-run",
+        help="Resumable 160-PDF delivery controller for the next Codex production run.",
+    )
+    delivery.add_argument("--manifest", type=Path, help="delivery manifest JSON")
+    delivery.add_argument("--source-root", type=Path)
+    delivery.add_argument("--output-root", type=Path)
+    delivery.add_argument("--state", type=Path, help="batch-state.json path")
+    delivery.add_argument("--plans-dir", type=Path)
+    delivery.add_argument("--packets-dir", type=Path)
+    delivery.add_argument("--out-dir", type=Path)
+    delivery.add_argument("--document-context", type=Path)
+    delivery.add_argument("--phase", choices=("preflight", "canary", "pilot", "production"))
+    delivery.add_argument("--resume", action="store_true")
+    delivery.add_argument("--retry-failed", action="store_true")
+    delivery.add_argument("--retry-review-required", action="store_true")
+    delivery.add_argument("--only", type=str)
+    delivery.add_argument("--skip-released", action="store_true")
+    delivery.add_argument("--canary-size", type=int, default=5)
+    delivery.add_argument("--pilot-size", type=int, default=20)
+    delivery.add_argument("--max-concurrency", type=int, default=2)
+    delivery_sub = delivery.add_subparsers(dest="delivery_subcommand")
+    for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start"):
+        delivery_sub.add_parser(name)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Inventory and audit legacy bilingual engineering drawings."
@@ -333,6 +361,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     benchmark_split.add_argument("--author", default="")
     benchmark_split.add_argument("--force", action="store_true")
+    _add_delivery_run_parser(subparsers)
     add_v4_parser(subparsers)
     return parser
 
@@ -386,10 +415,114 @@ def _guard_heldout_workspace(args: Any) -> None:
         raise SystemExit(3) from error
 
 
+def _run_delivery_command(args: Any) -> int:
+    from .delivery_run import (
+        batch_summary,
+        build_plan_shards,
+        export_plan_packets,
+        import_supervisor_plans,
+        load_batch,
+        new_batch,
+        phase_gate,
+        save_batch,
+        select_phase_items,
+    )
+    from .preflight import build_preflight_html, run_preflight
+
+    sub = getattr(args, "delivery_subcommand", None) or "start"
+    if sub == "preflight":
+        if args.manifest is None or args.source_root is None or args.output_root is None:
+            raise SystemExit("delivery-run preflight requires --manifest --source-root --output-root")
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        report = run_preflight(manifest=manifest, source_root=args.source_root, output_root=args.output_root)
+        out = args.output_root / "delivery-preflight.json"
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (args.output_root / "delivery-preflight.html").write_text(build_preflight_html(report), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("passed") else 3
+    if sub == "export-plan-packets":
+        if args.manifest is None or args.source_root is None or args.out_dir is None:
+            raise SystemExit("delivery-run export-plan-packets requires --manifest --source-root --out-dir")
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        document_context = json.loads(args.document_context.read_text(encoding="utf-8")) if args.document_context else None
+        written = export_plan_packets(manifest=manifest, source_root=args.source_root, out_dir=args.out_dir, document_context=document_context)
+        shards = build_plan_shards(packet_paths=written, out_dir=args.out_dir)
+        print(json.dumps({"packets": len(written), "shards": len(shards)}, ensure_ascii=False, indent=2))
+        return 0
+    if sub in ("import-supervisor-plans", "validate-supervisor-plans"):
+        if args.plans_dir is None or args.packets_dir is None or args.out_dir is None:
+            raise SystemExit(f"delivery-run {sub} requires --plans-dir --packets-dir --out-dir")
+        result = import_supervisor_plans(plans_dir=args.plans_dir, packets_dir=args.packets_dir, out_dir=args.out_dir)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if all(item["status"] == "valid" for item in result["items"]) else 2
+    if sub == "next-plan-shard":
+        if args.out_dir is None:
+            raise SystemExit("delivery-run next-plan-shard requires --out-dir")
+        shards = sorted(Path(args.out_dir).glob("plan-shard-*.json"))
+        if not shards:
+            raise SystemExit("no plan shards found")
+        print(json.dumps({"next_shard": str(shards[0]), "total": len(shards)}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "summary":
+        if args.state is None:
+            raise SystemExit("delivery-run summary requires --state")
+        batch = load_batch(args.state)
+        print(json.dumps(batch_summary(batch), ensure_ascii=False, indent=2))
+        return 0
+    if sub == "phase-gate":
+        if args.state is None:
+            raise SystemExit("delivery-run phase-gate requires --state")
+        batch = load_batch(args.state)
+        reasons = phase_gate(batch)
+        print(json.dumps({"blocked": bool(reasons), "reasons": reasons}, ensure_ascii=False, indent=2))
+        return 3 if reasons else 0
+    # start / resume
+    if args.manifest is None or args.output_root is None:
+        raise SystemExit("delivery-run start requires --manifest --output-root")
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    state_path = Path(args.state) if args.state else Path(args.output_root) / "batch-state.json"
+    if not state_path.exists():
+        new_batch(batch_id=str(manifest.get("batch_id") or "delivery"), items=manifest.get("items") or [], output_root=args.output_root)
+    batch = load_batch(state_path)
+    phase = args.phase or batch.get("phase") or "preflight"
+    if args.retry_failed:
+        for item in batch["items"]:
+            if item["state"] == "failed":
+                item["state"] = "pending"
+                item["failure_reason"] = None
+    if args.retry_review_required:
+        for item in batch["items"]:
+            if item["state"] == "review_required":
+                item["state"] = "pending"
+    if args.only:
+        allowed = {value.strip() for value in args.only.split(",") if value.strip()}
+        batch["items"] = [item for item in batch["items"] if str(item.get("item_id") or "") in allowed]
+    if args.skip_released:
+        batch["items"] = [item for item in batch["items"] if item["state"] != "released"]
+    reasons = phase_gate(batch)
+    if reasons:
+        batch["phase_status"] = "blocked"
+        batch["blocking_reasons"] = reasons
+        save_batch(state_path, batch)
+        print(json.dumps({"error": "phase gate blocked", "reasons": reasons}, ensure_ascii=False, indent=2))
+        return 3
+    batch["phase"] = phase
+    selected = select_phase_items(batch, phase=phase, canary_size=args.canary_size, pilot_size=args.pilot_size)
+    for item in batch["items"]:
+        if str(item.get("item_id") or "") in selected:
+            item["state"] = "preflight"
+    batch["phase_status"] = "running"
+    save_batch(state_path, batch)
+    print(json.dumps({"batch_id": batch.get("batch_id"), "phase": phase, "selected": selected, "state": str(state_path)}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "v4-run":
         return run_v4_command(args)
+    if args.command == "delivery-run":
+        return _run_delivery_command(args)
     if args.command == "benchmark-prelabel":
         _guard_heldout_sample(args)
     if args.command == "benchmark-adjudicate":
