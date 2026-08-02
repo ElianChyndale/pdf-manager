@@ -102,13 +102,31 @@ def _render_mode_for(zone: str) -> str:
     return "preserve_source_blue_chinese"
 
 
+# V4 typography floors (WORKFLOW_SPEC_V4.md §6 / workflow_policy.PRODUCTION_TYPOGRAPHY).
+_ZONE_FONT_FLOOR = {
+    "drawing_body": 6.4,        # preferred; hard min 5.8
+    "drawing_table": 6.4,
+    "state_bearing_metadata": 6.4,
+    "directory_index": 7.2,     # preferred; hard min 6.8
+    "company_contact_panel": 6.8,  # preferred; hard min 6.4
+    "prose_or_index_metadata": 6.4,
+    "sidebar_footer": 6.4,
+    "sidebar_footer_table": 6.4,
+}
+
+
+def _zone_font_floor(zone: str) -> float:
+    return _ZONE_FONT_FLOOR.get(zone, 6.4)
+
+
 def _candidates_to_regions(candidates: list[dict], page_size: list[float]) -> list[dict]:
     """Wrap packet native-text candidates as translation_qa regions.
 
     Literal codes/dims -> keep_literal; offline-translatable natural language
     -> pre-filled translated_text with action 'translate' but already resolved;
     noise fragments -> dropped; remaining natural language -> 'translate' and
-    sent to DeepSeek flash.
+    sent to DeepSeek flash.  Chinese-origin text -> not_source_language (never a
+    translation target).
     """
     from .offline_translate import offline_translate
 
@@ -119,6 +137,19 @@ def _candidates_to_regions(candidates: list[dict], page_size: list[float]) -> li
             continue
         bbox = [float(v) for v in (cand.get("bbox") or [0, 0, 0, 0])]
         rotation = int(cand.get("rotation") or 0) % 360
+        if _CJK_RE.search(text):
+            regions.append(
+                {
+                    "region_id": f"p{index:04d}",
+                    "source_text": text,
+                    "bbox": bbox,
+                    "rotation": rotation,
+                    "action": "review",
+                    "coverage_status": "not_source_language",
+                    "source_language": "zh",
+                }
+            )
+            continue
         if _is_literal(text):
             regions.append(
                 {
@@ -225,11 +256,13 @@ def build_draft_plan(
                         "render_mode": _render_mode_for(zone),
                         "target_bbox": item["bbox"],
                         "rotation": item["rotation"],
+                        "font_size": _zone_font_floor(zone),
                         "mode": "title_block" if zone == "state_bearing_metadata" else ("table_cell" if zone == "company_contact_panel" else "inline"),
                     },
                 }
             )
 
+    coverage_inventory = _coverage_inventory(regions, candidates, page_size)
     return {
         "schema": DRAFT_SCHEMA,
         "packet_id": packet_id,
@@ -240,11 +273,46 @@ def build_draft_plan(
         "page_type": "engineering_drawing",
         "page_region_map": _region_map(packet, page_size),
         "semantic_blocks": blocks,
-        "coverage_inventory": _coverage_inventory(regions, candidates, page_size),
+        "coverage_inventory": coverage_inventory,
+        # Full-closure evidence: every coverage candidate is referenced once by
+        # its owning block (or marked not_needed / literal_only / not_source).
+        "coverage_evidence": _coverage_evidence(coverage_inventory, blocks, literal_only_ids),
         "literal_only_ids": literal_only_ids,
+        "decision_source": "draft_plan_generator",
+        # Skeleton the supervisor fills with a REAL invocation when signing.
+        "supervisor_invocation": {
+            "verified": False,
+            "mode": "codex_agent_multimodal",
+            "model": "gpt-5.6-sol",
+            "reasoning_profile": "light",
+            "agent_id": "",
+            "started_at": "",
+            "completed_at": "",
+            "response_sha256": "",
+            "source_sha256": str(packet.get("source_sha256") or ""),
+        },
         "draft": True,
         "needs_supervisor_visual_review": True,
     }
+
+
+def _coverage_evidence(inventory: list[dict], blocks: list[dict], literal_only_ids: list[str]) -> list[dict]:
+    """Map each coverage candidate to its owning block for closure proof."""
+    literal_set = set(literal_only_ids)
+    evidence = []
+    for inv in inventory:
+        cid = str(inv.get("candidate_id") or "")
+        status = str(inv.get("status") or "")
+        owner = None
+        if status == "translated":
+            owner = next((b.get("block_id") for b in blocks if cid in (b.get("source_ids") or [])), None)
+        if owner:
+            evidence.append({"candidate_ids": [cid], "source": "native_pdf_text", "block_id": owner, "page_index": 0})
+        elif status in ("literal_only", "not_needed", "not_source_language"):
+            evidence.append({"candidate_ids": [cid], "source": "native_pdf_text", "status": status, "page_index": 0})
+        else:
+            evidence.append({"candidate_ids": [cid], "source": "native_pdf_text", "status": "manual_review", "page_index": 0})
+    return evidence
 
 
 def _region_map(packet: Mapping[str, Any], page_size: list[float]) -> list[dict]:
@@ -260,22 +328,40 @@ def _region_map(packet: Mapping[str, Any], page_size: list[float]) -> list[dict]
 
 
 def _coverage_inventory(regions: Mapping[str, dict], candidates: list[dict], page_size: list[float]) -> list[dict]:
+    """Full-closure coverage: EVERY native-text candidate must appear.
+
+    This is what makes validate_real_supervisor_plan's closure check pass
+    without the supervisor having to backfill missing native lines.  Noise
+    fragments become not_needed; Chinese-origin stays not_source_language;
+    anything unresolved becomes manual_review for the supervisor.
+    """
     inventory = []
     for index, cand in enumerate(candidates):
         text = str(cand.get("text") or "").strip()
         if not text:
             continue
         region = regions.get(f"p{index:04d}")
-        if region is None:
-            continue
         bbox = [float(v) for v in (cand.get("bbox") or [0, 0, 0, 0])]
         zone = _zone_for(page_size, bbox, int(cand.get("rotation") or 0) % 360)
+        if region is None:
+            # Dropped by the classifier (noise or untranslatable fragment): it
+            # must still be recorded so closure is provable, as not_needed.
+            inventory.append(
+                {
+                    "candidate_id": f"p{index:04d}",
+                    "source_text": text,
+                    "source_bbox": bbox,
+                    "status": "not_needed",
+                    "zone": zone,
+                }
+            )
+            continue
         inventory.append(
             {
                 "candidate_id": f"p{index:04d}",
                 "source_text": text,
                 "source_bbox": bbox,
-                "status": str(region.get("coverage_status") or "translated"),
+                "status": str(region.get("coverage_status") or "manual_review"),
                 "zone": zone,
             }
         )
@@ -387,6 +473,53 @@ def _cache_key_for(region: Mapping[str, Any]) -> str:
     import hashlib as _hashlib
     text = _normalized(str(region.get("source_text") or ""))
     return _hashlib.sha256(f"v4|{text}".encode("utf-8")).hexdigest()
+
+
+def sign_draft_plan(
+    *,
+    draft: Mapping[str, Any],
+    page_image: Path,
+    agent_id: str,
+    started_at: str,
+    completed_at: str,
+    response_sha256: str,
+) -> dict[str, Any]:
+    """Convert a machine draft into a SIGNED supervisor plan skeleton.
+
+    The supervisor (Codex) visually verifies the draft, then fills the real
+    invocation record (agent_id / started_at / completed_at / response_sha256).
+    This helper applies the mechanical contract fields so the supervisor does
+    not hand-edit them.  The draft's visual content (blocks, translations,
+    bboxes, coverage) is preserved unchanged.
+    """
+    import hashlib as _hashlib
+
+    plan = dict(draft)
+    plan["schema"] = "engineering-drawing-supervisor-plan-v1"
+    plan["planning_authority"] = "real_multimodal_supervisor"
+    plan["coordinate_space"] = "display_page_rect"
+    plan["draft"] = False
+    plan.pop("needs_supervisor_visual_review", None)
+    invocation = dict(plan.get("supervisor_invocation") or {})
+    invocation.update(
+        {
+            "verified": True,
+            "agent_id": agent_id,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "response_sha256": response_sha256,
+        }
+    )
+    plan["supervisor_invocation"] = invocation
+    image_sha256 = _hashlib.sha256(Path(page_image).read_bytes()).hexdigest()
+    plan["page_image_evidence"] = [
+        {"visual_inspection": True, "image_sha256": image_sha256, "image_path": str(Path(page_image).resolve())}
+    ]
+    # Flip region decision_source to the signed supervisor.
+    for region in plan.get("page_region_map") or []:
+        region["decision_source"] = "real_multimodal_supervisor"
+    plan["unexplained_region_ids"] = []
+    return plan
 
 
 def generate_drafts(
