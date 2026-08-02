@@ -230,9 +230,30 @@ def _inline_region_from_block(raw: Mapping[str, Any]) -> dict[str, Any]:
         "coverage_status": "translated",
     }
     if isinstance(target, (list, tuple)) and len(target) == 4:
-        region["review_target_bbox"] = [float(value) for value in target]
+        region["review_target_bbox"] = _expand_min_bbox([float(value) for value in target])
         region["review_font_size"] = float(placement.get("font_size") or 0) or None
     return region
+
+
+def _expand_min_bbox(bbox: list[float]) -> list[float]:
+    """Grow a too-narrow source text box to a minimum readable area.
+
+    Native-text bboxes for short drawing labels (e.g. ``VENT TO`` 44x10pt) are
+    too small to hold the bilingual text at the V4 font floor; the renderer's
+    insert_textbox then fails.  Expanding to a minimum width/height lets the
+    bilingual text wrap and render without human geometry editing.
+    """
+    x0, y0, x1, y1 = bbox
+    width = x1 - x0
+    height = y1 - y0
+    # Minimum readable box for a short bilingual label at 6.4pt.
+    min_width = 180.0
+    min_height = 24.0
+    if width >= min_width and height >= min_height:
+        return [x0, y0, x1, y1]
+    expand_x = max(0.0, (min_width - width) / 2.0)
+    expand_y = max(0.0, (min_height - height) / 2.0)
+    return [x0 - expand_x, y0 - expand_y, x1 + expand_x, y1 + expand_y]
 
 
 def render_inline_plus_opaque(
@@ -306,15 +327,25 @@ def render_inline_plus_opaque(
         for block in semantic_blocks
         if str(block.get("coverage_status") or "") == "translated"
     ]
+    opaque_ids = [str(block.get("block_id") or "") for block in opaque_blocks if block.get("block_id")]
+    opaque_failed_set = set(opaque_failed)
+    # Opaque blocks were rendered onto the panel base; the inline placement
+    # audit only covers inline blocks.  Any opaque block NOT in the opaque
+    # failure list was rendered successfully and must count as rendered.
+    rendered_opaque = [bid for bid in opaque_ids if bid not in opaque_failed_set]
     statuses = _placement_statuses(audit_path)
     hard, rendered, failed = _hard_findings_from_placements(planned_ids, statuses, opaque_failed)
+    # Inline audit failures exclude opaque blocks; merge the opaque successes in.
+    rendered_set = set(rendered) | set(rendered_opaque)
+    failed_set = set(failed) - set(rendered_opaque)
+    hard_set = set(hard) - set(rendered_opaque)
     return RendererOutcome(
         output_pdf_path=output_pdf,
         placement_audit_path=audit_path,
         planned_ids=planned_ids,
-        rendered_ids=rendered,
-        failed_block_ids=failed,
-        hard_findings=hard,
+        rendered_ids=sorted(rendered_set),
+        failed_block_ids=sorted(failed_set),
+        hard_findings=sorted(hard_set),
         soft_findings=list(panel_result.get("soft_findings") or []),
     )
 
@@ -595,7 +626,7 @@ def run_v4_flow(
         work_dir=work_dir,
         renderer_options=renderer_options,
     )
-    if outcome.failed_block_ids:
+    if outcome.failed_block_ids and not (renderer_options or {}).get("allow_partial"):
         raise ValueError(
             "candidate render failed blocks: " + ", ".join(outcome.failed_block_ids)
         )
@@ -626,6 +657,38 @@ def run_v4_flow(
         rendered_ids=outcome.rendered_ids,
         candidate_pdf=str(candidate_pdf),
     )
+
+    # ---- Partial-candidate path -------------------------------------------
+    # With allow_partial, a candidate that still has failed blocks is a valid
+    # REVIEWABLE PDF (not a release): produce it, record the failures as review
+    # items, and stop before the release gate (do NOT validate full closure on
+    # a partial candidate).  The user/supervisor reviews the candidate and
+    # repairs the failed blocks via review-decision-apply.
+    if outcome.failed_block_ids and (renderer_options or {}).get("allow_partial"):
+        _write_json(work_dir / "stage4-rendered-candidate.json", stage4)
+        timing["completed_at"] = datetime.now(timezone.utc).isoformat()
+        _write_json(work_dir / "timing.json", timing)
+        _write_json(
+            work_dir / "partial-candidate-review.json",
+            {
+                "schema": "engineering-drawing-partial-candidate-v1",
+                "candidate_pdf": str(candidate_pdf),
+                "failed_block_ids": outcome.failed_block_ids,
+                "rendered_ids": outcome.rendered_ids,
+                "reason": "candidate produced with unreviewed blocks; review + repair before release",
+            },
+        )
+        return {
+            "run_id": run_id,
+            "work_dir": str(work_dir),
+            "candidate_pdf": str(candidate_pdf),
+            "stage": "rendered_candidate",
+            "published": False,
+            "reason": "partial_candidate_for_review",
+            "failed_block_ids": outcome.failed_block_ids,
+            "rendered_ids": outcome.rendered_ids,
+        }
+
     validate_handoff(stage4, previous=stage3)
     _write_json(work_dir / "stage4-rendered-candidate.json", stage4)
     _tick("render")
@@ -764,6 +827,7 @@ def render_signed_plan(
     renderer: str = "inline_plus_opaque",
     accepted_by: str = "operator",
     ocr_payload: Mapping[str, Any] | None = None,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     """Render a Codex-visually-signed plan to PDF without a run bundle.
 
@@ -804,6 +868,7 @@ def render_signed_plan(
         human_acceptance=acceptance,
         allow_publish=True,
         bundle_verified=True,
+        renderer_options={"allow_partial": allow_partial},
     )
 
 
@@ -1086,6 +1151,7 @@ def add_v4_parser(subparsers: Any) -> None:
     render_signed.add_argument("--formal-dir", required=True, type=Path)
     render_signed.add_argument("--renderer", choices=sorted(RENDERERS), default="inline_plus_opaque")
     render_signed.add_argument("--accepted-by", default="operator")
+    render_signed.add_argument("--allow-partial", action="store_true", help="Produce the PDF even if some blocks fail; failures become review items.")
 
 
 def _run_scorecard(args: Any) -> int:
@@ -1172,6 +1238,7 @@ def run_v4_command(args: Any) -> int:
             formal_dir=args.formal_dir,
             renderer=args.renderer,
             accepted_by=args.accepted_by,
+            allow_partial=bool(getattr(args, "allow_partial", False)),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
