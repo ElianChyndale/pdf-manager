@@ -72,6 +72,23 @@ def test_bilingual_overlay_preserves_source_scale_and_adds_chinese(tmp_path: Pat
     assert result.inline_placements + result.sidebar_placements == 1
 
 
+def test_bilingual_overlay_fast_save_keeps_reference_content(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.pdf"
+    output_path = tmp_path / "fast-reference.pdf"
+    _source_pdf(source_path)
+
+    render_bilingual_overlay(
+        source_pdf_path=source_path,
+        output_pdf_path=output_path,
+        regions=_regions(),
+        optimize=False,
+    )
+
+    with fitz.open(output_path) as output:
+        assert "Distribution Water Pump" in output[0].get_text()
+        assert "配水泵" in output[0].get_text()
+
+
 def test_dual_output_keeps_left_page_at_one_to_one_scale(tmp_path: Path) -> None:
     source_path = tmp_path / "source.pdf"
     output_path = tmp_path / "dual.pdf"

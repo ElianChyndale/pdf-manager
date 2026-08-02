@@ -2300,6 +2300,7 @@ def render_bilingual_overlay(
     output_pdf_path: Path,
     regions: Iterable[dict],
     font_path: Path | None = None,
+    optimize: bool = True,
 ) -> EngineeringRenderResult:
     source_pdf_path = Path(source_pdf_path)
     output_pdf_path = Path(output_pdf_path)
@@ -2421,7 +2422,17 @@ def render_bilingual_overlay(
             reference_pages += page_reference_pages
             reference_map.extend(page_reference_map)
         output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        output.save(output_pdf_path, garbage=4, deflate=True, clean=True)
+        # The normal path keeps its compact, fully-cleaned output.  A private
+        # reference-delivery batch already preserves the complete source page
+        # unchanged and can safely skip expensive stream rewriting; this makes
+        # bounded foreground rendering practical without changing any text or
+        # placement semantics.
+        output.save(
+            output_pdf_path,
+            garbage=4 if optimize else 1,
+            deflate=optimize,
+            clean=optimize,
+        )
     finally:
         output.close()
         source.close()
