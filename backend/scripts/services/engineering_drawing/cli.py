@@ -191,6 +191,12 @@ def _add_delivery_run_parser(subparsers: Any) -> None:
     delivery_sub = delivery.add_subparsers(dest="delivery_subcommand")
     for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start", "delivery-report", "duplicate-map", "validate-production", "dashboard", "draft-plans", "build-global-cache"):
         delivery_sub.add_parser(name, parents=[delivery_parent])
+    sign = delivery_sub.add_parser("sign-draft", parents=[delivery_parent])
+    sign.add_argument("--item", required=True, type=str)
+    sign.add_argument("--agent-id", required=True, type=str)
+    sign.add_argument("--started-at", required=True, type=str)
+    sign.add_argument("--completed-at", required=True, type=str)
+    sign.add_argument("--response-sha256", required=True, type=str)
     review_import = delivery_sub.add_parser("review-decision-import", parents=[delivery_parent])
     review_import.add_argument("--file", required=True, type=Path)
     review_import.add_argument("--decisions-out", required=True, type=Path)
@@ -547,6 +553,32 @@ def _run_delivery_command(args: Any) -> int:
         )
         summary = summarize_drafts(args.out_dir)
         print(json.dumps({"written": len(written), **summary}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "sign-draft":
+        from .draft_plans import sign_draft_plan
+
+        if args.plans_dir is None or args.packets_dir is None or args.out_dir is None:
+            raise SystemExit("delivery-run sign-draft requires --plans-dir --packets-dir --out-dir")
+        drafts_dir = Path(args.plans_dir)
+        out_dir = Path(args.out_dir)
+        item = args.item
+        draft_path = drafts_dir / f"draft-{item}.json"
+        page_image = Path(args.packets_dir) / item / "page-0001.png"
+        if not draft_path.is_file() or not page_image.is_file():
+            raise SystemExit(f"sign-draft: missing draft {draft_path} or image {page_image}")
+        draft = json.loads(draft_path.read_text(encoding="utf-8"))
+        plan = sign_draft_plan(
+            draft=draft,
+            page_image=page_image,
+            agent_id=args.agent_id,
+            started_at=args.started_at,
+            completed_at=args.completed_at,
+            response_sha256=args.response_sha256,
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = out_dir / f"plan-{item}.json"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"item": item, "signed": str(plan_path), "blocks": len(plan.get("semantic_blocks") or []), "coverage": len(plan.get("coverage_inventory") or [])}, ensure_ascii=False, indent=2))
         return 0
     if sub == "dashboard":
         if args.state is None:
