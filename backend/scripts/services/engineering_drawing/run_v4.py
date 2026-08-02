@@ -101,6 +101,12 @@ def _as_blocks(plan: Mapping[str, Any]) -> tuple[list[dict], list[str], list[str
         if not block_id:
             continue
         status = str(raw.get("coverage_status") or "")
+        # Literal-only candidates are closed by coverage_inventory and must
+        # remain visible on the source PDF.  They are not translation render
+        # blocks, otherwise the stage handoff sees the same source ID both as
+        # translated and literal-only.
+        if status.casefold() == "literal_only":
+            continue
         placement = raw.get("placement") if isinstance(raw.get("placement"), Mapping) else {}
         zone = str(raw.get("region_type") or "")
         if not zone:
@@ -272,7 +278,14 @@ def render_inline_plus_opaque(
     then the remaining inline blocks are placed onto that base.  The placement
     audit is written beside ``output_pdf`` and read back for closure tracking.
     """
-    semantic_blocks = [dict(item) for item in plan.get("semantic_blocks") or [] if isinstance(item, Mapping)]
+    # A literal-only inventory entry is evidence that the original glyphs are
+    # intentionally retained. Only translated blocks belong to either renderer.
+    semantic_blocks = [
+        dict(item)
+        for item in plan.get("semantic_blocks") or []
+        if isinstance(item, Mapping)
+        and str(item.get("coverage_status") or "").casefold() == "translated"
+    ]
     opaque_blocks = [
         block
         for block in semantic_blocks
@@ -299,15 +312,13 @@ def render_inline_plus_opaque(
             )
             opaque_failed = list(panel_result.get("failed_block_ids") or [])
             if opaque_failed:
-                return RendererOutcome(
-                    output_pdf_path=output_pdf,
-                    placement_audit_path=output_pdf.with_suffix(".inline-placement.json"),
-                    planned_ids=[],
-                    rendered_ids=[],
-                    failed_block_ids=opaque_failed,
-                    hard_findings=["ink_coverage_gap"],
-                )
-            render_base = panel_pdf
+                # The opaque renderer still writes its partial base. Continue
+                # through the inline pass so --allow-partial has a real PDF to
+                # review. The returned failed IDs keep this path ineligible
+                # for stage-5 publication.
+                render_base = panel_pdf if panel_pdf.is_file() else Path(source_pdf)
+            else:
+                render_base = panel_pdf
 
         inline_regions = [_inline_region_from_block(block) for block in inline_blocks]
         render_bilingual_inline_only(

@@ -88,6 +88,7 @@ def make_valid_plan(source_pdf: Path, response_sha256: str) -> dict:
                 "region_type": "drawing_body",
                 "coverage_status": "translated",
                 "source_text": "ROOF",
+                "source_bbox": [10, 10, 40, 25],
                 "translated_text": "屋顶",
                 "member_ids": ["c1"],
                 "placement": {

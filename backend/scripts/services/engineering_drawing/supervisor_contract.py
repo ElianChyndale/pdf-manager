@@ -334,6 +334,12 @@ def validate_real_supervisor_plan(
         _require(_text(block.get("page_region_id")) in region_ids, f"block {block_id} has no declared zone")
         status = _text(block.get("coverage_status")).casefold()
         _require(status in _COVERAGE_STATUSES, f"block {block_id} has invalid coverage status")
+        if status in {"translated", "literal_only"}:
+            source_bbox = block.get("source_bbox")
+            _require(
+                isinstance(source_bbox, (list, tuple)) and len(source_bbox) == 4,
+                f"block {block_id} requires source_bbox for executable placement",
+            )
         if status == "translated":
             _require(bool(_CJK_RE.search(_text(block.get("translated_text")))), f"block {block_id} lacks Chinese translation")
             _require(

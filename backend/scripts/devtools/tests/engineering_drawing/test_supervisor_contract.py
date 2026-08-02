@@ -115,6 +115,15 @@ def test_native_pdf_text_must_be_closed_by_coverage_inventory(tmp_path: Path) ->
         validate_real_supervisor_plan(plan, source_pdf_path=source)
 
 
+def test_translated_semantic_block_requires_its_own_source_geometry(tmp_path: Path) -> None:
+    """A signed coverage ledger is not enough to make a block executable."""
+    source = _source(tmp_path / "source.pdf")
+    plan = _plan(source)
+    plan["semantic_blocks"][0].pop("source_bbox")
+    with pytest.raises(ValueError, match="requires source_bbox"):
+        validate_real_supervisor_plan(plan, source_pdf_path=source)
+
+
 def test_coverage_evidence_cannot_be_empty_or_self_inconsistent(tmp_path: Path) -> None:
     source = _source(tmp_path / "source.pdf")
     plan = _plan(source)
