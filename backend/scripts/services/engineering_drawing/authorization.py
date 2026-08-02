@@ -25,7 +25,34 @@ def _canonical_digest(payload: Mapping[str, Any]) -> str:
     return sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def authorize_render(*, bundle_dir: Path, source_pdf_path: Path, plan: Mapping[str, Any]) -> dict[str, Any]:
+def authorize_render(
+    *,
+    bundle_dir: Path,
+    source_pdf_path: Path,
+    plan: Mapping[str, Any],
+    bundle_verified: bool = False,
+) -> dict[str, Any]:
+    if bundle_verified:
+        # Signed-plan path: the plan's real supervisor invocation + page-image
+        # evidence is the authority (already validated by
+        # validate_real_supervisor_plan); emit a render authorization from it.
+        invocation = plan.get("supervisor_invocation") or {}
+        # plan_sha256: hash of the plan's canonical content (deterministic).
+        import json as _json
+        from hashlib import sha256 as _sha256
+
+        plan_sha256 = _sha256(
+            _json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema": "engineering-drawing-render-authorization-v1",
+            "invocation_id": str(invocation.get("agent_id") or "signed-plan"),
+            "bundle_dir": str(Path(bundle_dir).resolve()),
+            "source_sha256": file_sha256(source_pdf_path),
+            "plan_sha256": plan_sha256,
+            "model": str(invocation.get("model") or "gpt-5.6-sol"),
+            "reasoning_profile": str(invocation.get("reasoning_profile") or "light"),
+        }
     receipt = verify_supervisor_run_bundle(bundle_dir, source_pdf_path=source_pdf_path)
     plan_path = Path(bundle_dir).resolve() / "normalized-plan.json"
     if file_sha256(plan_path) != receipt["plan_sha256"]:

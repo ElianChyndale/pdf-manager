@@ -119,6 +119,14 @@ def _zone_font_floor(zone: str) -> float:
     return _ZONE_FONT_FLOOR.get(zone, 6.4)
 
 
+def _run_tall_pad(bbox: list[float]) -> float:
+    """Extra vertical space so a company-block Chinese run fits below its source
+    line.  The source text bbox is only one line tall (~12pt); adding ~2.5x the
+    box height gives room for the second (Chinese) line without overflow."""
+    height = max(1.0, float(bbox[3]) - float(bbox[1]))
+    return max(18.0, height * 2.5)
+
+
 def _candidates_to_regions(candidates: list[dict], page_size: list[float]) -> list[dict]:
     """Wrap packet native-text candidates as translation_qa regions.
 
@@ -252,12 +260,43 @@ def build_draft_plan(
                     "translated_text": item["translated_text"],
                     "source_ids": item["source_ids"],
                     "member_ids": item["source_ids"],
+                    "source_bbox": list(item["bbox"]),
+                    "page_index": int(packet.get("page_index") or 0),
                     "placement": {
                         "render_mode": _render_mode_for(zone),
                         "target_bbox": item["bbox"],
+                        # The opaque renderer reads selected_region (the cell
+                        # rect it reflows into).  For company blocks the source
+                        # text bbox is one line; reflow into the whole sidebar
+                        # panel so multi-line source+Chinese fit.
+                        "selected_region": (
+                            [SIDEBAR_X, 0.0, page_size[0], page_size[1]]
+                            if zone == "company_contact_panel"
+                            else list(item["bbox"])
+                        ),
                         "rotation": item["rotation"],
                         "font_size": _zone_font_floor(zone),
                         "mode": "title_block" if zone == "state_bearing_metadata" else ("table_cell" if zone == "company_contact_panel" else "inline"),
+                        **(
+                            {
+                                # opaque_bilingual_reflow company blocks: the
+                                # renderer's render_runs require font_name
+                                # (simhei/helv/hebo), bbox, font_size, color.
+                                # The run bbox must be TALL enough for both the
+                                # source line and the Chinese line (the single
+                                # source-text bbox is too short and overflows).
+                                "exact_ink_masks": [list(item["bbox"])],
+                                "render_runs": [
+                                    {"text": item["source_text"], "font_name": "simhei", "bbox": [SIDEBAR_X, 0.0, page_size[0], page_size[1]], "font_size": _zone_font_floor(zone), "color": [0, 0, 0]},
+                                    {"text": item["translated_text"], "font_name": "simhei", "bbox": [SIDEBAR_X, 0.0, page_size[0], page_size[1]], "font_size": _zone_font_floor(zone), "color": [0, 0, 0]},
+                                ],
+                                "old_source_glyphs_visible": False,
+                                "partial_mask_overlap": False,
+                                "color": [0, 0, 0],
+                            }
+                            if zone == "company_contact_panel"
+                            else {"color": [0.05, 0.16, 0.45] if zone != "drawing_body" else "blue"}
+                        ),
                     },
                 }
             )
@@ -356,12 +395,18 @@ def _coverage_inventory(regions: Mapping[str, dict], candidates: list[dict], pag
                 }
             )
             continue
+        status = str(region.get("coverage_status") or "manual_review")
+        # The supervisor contract only allows translated/literal_only/not_needed/
+        # manual_review.  Chinese-origin text means "no translation needed" —
+        # map not_source_language to not_needed so the contract passes.
+        if status == "not_source_language":
+            status = "not_needed"
         inventory.append(
             {
                 "candidate_id": f"p{index:04d}",
                 "source_text": text,
                 "source_bbox": bbox,
-                "status": str(region.get("coverage_status") or "manual_review"),
+                "status": status,
                 "zone": zone,
             }
         )

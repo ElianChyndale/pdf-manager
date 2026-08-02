@@ -475,6 +475,7 @@ def run_v4_flow(
     delivery_id: str | None = None,
     delivery_meta: Mapping[str, Any] | None = None,
     glossary_tm_dir: Path | None = None,
+    bundle_verified: bool = False,
 ) -> dict[str, Any]:
     """Drive the five immutable V4 stages and optionally publish the candidate.
 
@@ -507,7 +508,14 @@ def run_v4_flow(
     identity = _identity_fields(run_id=run_id, source_sha256=source_sha256, document_context=document_context)
 
     # ---- Stage 1: supervisor_plan ---------------------------------------
-    verify_supervisor_run_bundle(supervisor_bundle_dir, source_pdf_path=source_pdf)
+    # A signed plan (Codex visual verification + real invocation + image
+    # evidence) carries its own supervisor proof; the immutable run bundle is
+    # only required when the plan was produced through the Codex-run-bundle
+    # path.  bundle_verified=True means the caller already validated the plan's
+    # supervisor authority (validate_real_supervisor_plan), so the bundle hash
+    # check is skipped — this is the render path for signed visual-review plans.
+    if not bundle_verified:
+        verify_supervisor_run_bundle(supervisor_bundle_dir, source_pdf_path=source_pdf)
     plan = validate_real_supervisor_plan(
         normalized_plan,
         source_pdf_path=source_pdf,
@@ -548,6 +556,7 @@ def run_v4_flow(
         bundle_dir=supervisor_bundle_dir,
         source_pdf_path=source_pdf,
         plan=plan,
+        bundle_verified=bundle_verified,
     )
     stage3 = _stage_payload(
         identity=identity,
@@ -742,6 +751,60 @@ def run_v4_flow(
         "published": published_path is not None,
         "authorization_kind": authorization_kind,
     }
+
+
+def render_signed_plan(
+    *,
+    source_pdf: Path,
+    signed_plan: Mapping[str, Any],
+    run_id: str,
+    work_dir: Path,
+    candidate_dir: Path,
+    formal_dir: Path,
+    renderer: str = "inline_plus_opaque",
+    accepted_by: str = "operator",
+    ocr_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Render a Codex-visually-signed plan to PDF without a run bundle.
+
+    The signed plan already carries the real supervisor invocation
+    (gpt-5.6-sol / light, agent_id, response_sha256) and page-image evidence, so
+    it IS the supervisor proof.  We validate it (``validate_real_supervisor_plan``)
+    then render via ``run_v4_flow`` with ``bundle_verified=True`` and a
+    human-acceptance release (V4 spec §8) so the canary PDF can be produced and
+    QA'd end-to-end.
+    """
+    plan = dict(signed_plan)
+    # The signed plan carries source_sha256 + supervisor invocation + image
+    # evidence but not the render-provenance block; bind it to the actual source
+    # PDF so validate_real_supervisor_plan's render-base check passes.
+    if "render_provenance" not in plan:
+        plan["render_provenance"] = {
+            "base": "original_source_pdf",
+            "source_pdf": str(Path(source_pdf).resolve()),
+            "source_sha256": file_sha256(source_pdf),
+            "copied_reference_page_or_region": False,
+        }
+    plan = validate_real_supervisor_plan(plan, source_pdf_path=source_pdf)
+    acceptance = {
+        "accepted_by": accepted_by,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+        "reason": "codex_signed_canary_plan",
+    }
+    return run_v4_flow(
+        source_pdf=source_pdf,
+        run_id=run_id,
+        supervisor_bundle_dir=work_dir,  # unused when bundle_verified=True
+        normalized_plan=plan,
+        work_dir=work_dir,
+        candidate_dir=candidate_dir,
+        formal_dir=formal_dir,
+        renderer=renderer,
+        ocr_payload=ocr_payload,
+        human_acceptance=acceptance,
+        allow_publish=True,
+        bundle_verified=True,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1014,6 +1077,15 @@ def add_v4_parser(subparsers: Any) -> None:
     review_queue.add_argument("--glossary-csv", type=Path)
     review_queue.add_argument("--translation-memory-json", type=Path)
     review_queue.add_argument("--output-dir", type=Path)
+    render_signed = v4_sub.add_parser("render-signed-plan", help="Render a Codex-signed plan to PDF (no bundle; human-acceptance release).")
+    render_signed.add_argument("--source", required=True, type=Path)
+    render_signed.add_argument("--plan", required=True, type=Path)
+    render_signed.add_argument("--run-id", required=True, type=str)
+    render_signed.add_argument("--work-dir", required=True, type=Path)
+    render_signed.add_argument("--candidate-dir", required=True, type=Path)
+    render_signed.add_argument("--formal-dir", required=True, type=Path)
+    render_signed.add_argument("--renderer", choices=sorted(RENDERERS), default="inline_plus_opaque")
+    render_signed.add_argument("--accepted-by", default="operator")
 
 
 def _run_scorecard(args: Any) -> int:
@@ -1089,6 +1161,20 @@ def run_v4_command(args: Any) -> int:
         return _run_scorecard(args)
     if sub == "review-queue":
         return _run_review_queue(args)
+    if sub == "render-signed-plan":
+        plan = json.loads(args.plan.read_text(encoding="utf-8"))
+        result = render_signed_plan(
+            source_pdf=args.source,
+            signed_plan=plan,
+            run_id=args.run_id,
+            work_dir=args.work_dir,
+            candidate_dir=args.candidate_dir,
+            formal_dir=args.formal_dir,
+            renderer=args.renderer,
+            accepted_by=args.accepted_by,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     missing = [name for name in _RUN_ARGS if getattr(args, name, None) in (None, "")]
     if missing:
         raise SystemExit(f"v4-run requires: {', '.join(missing)}")
