@@ -607,6 +607,10 @@ def translate_and_judge_engineering_regions(
             missing_translation_ids.update(missing)
             translation_calls += calls
             request_errors.extend(errors)
+            # Incremental persist: a timeout mid-batch must not lose prior
+            # translations.  The final _save_cache below re-saves the full set.
+            if cache_dirty:
+                _save_cache(cache_path, cache)
 
     candidate_items: list[dict] = []
     item_by_id = {str(item["item_id"]): item for item in to_translate}
@@ -712,6 +716,11 @@ def translate_and_judge_engineering_regions(
         qa_missing_ids.update(missing)
         qa_calls += calls
         request_errors.extend(errors)
+
+    # Incremental persist after QA too: the final promote loop below also
+    # writes accepted entries; saving here keeps those on timeout.
+    if cache_dirty:
+        _save_cache(cache_path, cache)
 
     # Promote each non-cached unique source to a final, QA-backed cache entry.
     for key, item in unique.items():

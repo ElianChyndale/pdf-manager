@@ -189,7 +189,7 @@ def _add_delivery_run_parser(subparsers: Any) -> None:
         help="Resumable 160-PDF delivery controller for the next Codex production run.",
     )
     delivery_sub = delivery.add_subparsers(dest="delivery_subcommand")
-    for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start", "delivery-report", "duplicate-map", "validate-production", "dashboard"):
+    for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start", "delivery-report", "duplicate-map", "validate-production", "dashboard", "draft-plans", "build-global-cache"):
         delivery_sub.add_parser(name, parents=[delivery_parent])
     review_import = delivery_sub.add_parser("review-decision-import", parents=[delivery_parent])
     review_import.add_argument("--file", required=True, type=Path)
@@ -523,6 +523,31 @@ def _run_delivery_command(args: Any) -> int:
         result = validate_production(args=args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("passed") else 2
+    if sub == "build-global-cache":
+        from .draft_plans import build_global_translation_cache
+        from services.translation.llm.shared.provider_runtime import get_api_key
+
+        if args.packets_dir is None or args.out_dir is None:
+            raise SystemExit("delivery-run build-global-cache requires --packets-dir --out-dir")
+        cache_path = Path(args.out_dir) / "draft-cache.json"
+        cache = build_global_translation_cache(packets_dir=args.packets_dir, cache_path=cache_path, api_key=get_api_key(required=False))
+        print(json.dumps({"schema": "engineering-drawing-draft-cache-v1", "entries": len(cache)}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "draft-plans":
+        from .draft_plans import generate_drafts, summarize_drafts
+
+        if args.packets_dir is None or args.out_dir is None:
+            raise SystemExit("delivery-run draft-plans requires --packets-dir --out-dir")
+        cache_path = Path(args.out_dir) / "draft-cache.json"
+        written = generate_drafts(
+            packets_dir=args.packets_dir,
+            plans_dir=args.out_dir,
+            only=[value.strip() for value in args.only.split(",")] if args.only else None,
+            cache_path=cache_path,
+        )
+        summary = summarize_drafts(args.out_dir)
+        print(json.dumps({"written": len(written), **summary}, ensure_ascii=False, indent=2))
+        return 0
     if sub == "dashboard":
         if args.state is None:
             raise SystemExit("delivery-run dashboard requires --state")
