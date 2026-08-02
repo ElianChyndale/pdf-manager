@@ -149,36 +149,52 @@ def _publish_json_exclusive(items: list[tuple[Path, object]]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _add_delivery_shared_args(parser: Any) -> None:
+    """Attach delivery-run shared args that must parse in either position."""
+    parser.add_argument("--manifest", type=Path, help="delivery manifest JSON")
+    parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--state", type=Path, help="batch-state.json path")
+    parser.add_argument("--plans-dir", type=Path)
+    parser.add_argument("--packets-dir", type=Path)
+    parser.add_argument("--out-dir", type=Path)
+    parser.add_argument("--document-context", type=Path)
+    parser.add_argument("--phase", choices=("preflight", "canary", "pilot", "production"))
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--retry-review-required", action="store_true")
+    parser.add_argument("--only", type=str)
+    parser.add_argument("--skip-released", action="store_true")
+    parser.add_argument("--canary-size", type=int, default=5)
+    parser.add_argument("--pilot-size", type=int, default=20)
+    parser.add_argument("--max-concurrency", type=int, default=2)
+    parser.add_argument("--glossary-tm-dir", type=Path, help="override glossary/TM directory")
+    parser.add_argument("--production-runtime", action="store_true", help="verify the production execution environment (OCR/LLM/deps)")
+    parser.add_argument("--all-sources-root", type=Path, help="raw source tree (incl. duplicates) for duplicate-map")
+    parser.add_argument("--freeze-config", type=Path, help="path to frozen-production-config.json for validate-production")
+
+
 def _add_delivery_run_parser(subparsers: Any) -> None:
     """Attach the ``delivery-run`` subcommand and its sub-commands."""
+    # Each subcommand is its OWN argparse parser that includes the shared args
+    # via parents=[], so --manifest etc. parse in ANY position relative to the
+    # subcommand name (argparse subparsers do not propagate parent args down).
+    import argparse as _argparse
+
+    delivery_parent = _argparse.ArgumentParser(add_help=False)
+    _add_delivery_shared_args(delivery_parent)
+
     delivery = subparsers.add_parser(
         "delivery-run",
         help="Resumable 160-PDF delivery controller for the next Codex production run.",
     )
-    delivery.add_argument("--manifest", type=Path, help="delivery manifest JSON")
-    delivery.add_argument("--source-root", type=Path)
-    delivery.add_argument("--output-root", type=Path)
-    delivery.add_argument("--state", type=Path, help="batch-state.json path")
-    delivery.add_argument("--plans-dir", type=Path)
-    delivery.add_argument("--packets-dir", type=Path)
-    delivery.add_argument("--out-dir", type=Path)
-    delivery.add_argument("--document-context", type=Path)
-    delivery.add_argument("--phase", choices=("preflight", "canary", "pilot", "production"))
-    delivery.add_argument("--resume", action="store_true")
-    delivery.add_argument("--retry-failed", action="store_true")
-    delivery.add_argument("--retry-review-required", action="store_true")
-    delivery.add_argument("--only", type=str)
-    delivery.add_argument("--skip-released", action="store_true")
-    delivery.add_argument("--canary-size", type=int, default=5)
-    delivery.add_argument("--pilot-size", type=int, default=20)
-    delivery.add_argument("--max-concurrency", type=int, default=2)
     delivery_sub = delivery.add_subparsers(dest="delivery_subcommand")
-    for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start"):
-        delivery_sub.add_parser(name)
-    review_import = delivery_sub.add_parser("review-decision-import")
+    for name in ("preflight", "export-plan-packets", "import-supervisor-plans", "validate-supervisor-plans", "next-plan-shard", "summary", "phase-gate", "start", "delivery-report", "duplicate-map", "validate-production", "dashboard"):
+        delivery_sub.add_parser(name, parents=[delivery_parent])
+    review_import = delivery_sub.add_parser("review-decision-import", parents=[delivery_parent])
     review_import.add_argument("--file", required=True, type=Path)
     review_import.add_argument("--decisions-out", required=True, type=Path)
-    review_apply = delivery_sub.add_parser("review-decision-apply")
+    review_apply = delivery_sub.add_parser("review-decision-apply", parents=[delivery_parent])
     review_apply.add_argument("--work-dir", required=True, type=Path)
     review_apply.add_argument("--decisions", required=True, type=Path)
     review_apply.add_argument("--run-record", required=True, type=Path)
@@ -441,7 +457,13 @@ def _run_delivery_command(args: Any) -> int:
         if args.manifest is None or args.source_root is None or args.output_root is None:
             raise SystemExit("delivery-run preflight requires --manifest --source-root --output-root")
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-        report = run_preflight(manifest=manifest, source_root=args.source_root, output_root=args.output_root)
+        report = run_preflight(
+            manifest=manifest,
+            source_root=args.source_root,
+            output_root=args.output_root,
+            glossary_dir=args.glossary_tm_dir,
+            production_runtime=bool(getattr(args, "production_runtime", False)),
+        )
         out = args.output_root / "delivery-preflight.json"
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         (args.output_root / "delivery-preflight.html").write_text(build_preflight_html(report), encoding="utf-8")
@@ -462,6 +484,59 @@ def _run_delivery_command(args: Any) -> int:
         result = import_supervisor_plans(plans_dir=args.plans_dir, packets_dir=args.packets_dir, out_dir=args.out_dir)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if all(item["status"] == "valid" for item in result["items"]) else 2
+    if sub == "delivery-report":
+        if args.manifest is None:
+            raise SystemExit("delivery-run delivery-report requires --manifest")
+        from .delivery_run import build_delivery_report
+
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        source_root = args.source_root or Path(args.manifest).parent
+        # Load sibling duplicate-map.json when present so delivered_files
+        # reflects reused duplicates (160/161) instead of just unique_processed.
+        duplicate_map = None
+        dup_map_path = Path(args.manifest).parent / "duplicate-map.json"
+        if dup_map_path.is_file():
+            try:
+                payload = json.loads(dup_map_path.read_text(encoding="utf-8"))
+                duplicate_map = payload.get("duplicate_map") if isinstance(payload, dict) else payload
+            except (OSError, json.JSONDecodeError):
+                duplicate_map = None
+        report = build_delivery_report(manifest=manifest, source_root=source_root, duplicate_map=duplicate_map)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "duplicate-map":
+        if args.manifest is None or args.source_root is None:
+            raise SystemExit("delivery-run duplicate-map requires --manifest --source-root")
+        from .delivery_run import build_duplicate_map
+
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if args.all_sources_root:
+            all_sources = [p for p in Path(args.all_sources_root).rglob("*.pdf") if p.is_file()]
+        else:
+            all_sources = [p for p in Path(args.source_root).parent.rglob("*.pdf") if p.is_file()]
+        duplicate_map = build_duplicate_map(manifest=manifest, source_root=args.source_root, all_sources=all_sources)
+        print(json.dumps({"duplicate_map": duplicate_map, "count": len(duplicate_map)}, ensure_ascii=False, indent=2))
+        return 0
+    if sub == "validate-production":
+        from .validate_production import validate_production
+
+        result = validate_production(args=args)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("passed") else 2
+    if sub == "dashboard":
+        if args.state is None:
+            raise SystemExit("delivery-run dashboard requires --state")
+        from .delivery_dashboard import build_dashboard, build_dashboard_html
+        from .delivery_run import load_batch
+
+        batch = load_batch(args.state)
+        dashboard = build_dashboard(batch=batch)
+        out = Path(args.output_root) if args.output_root else Path(args.state).parent
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "delivery-dashboard.json").write_text(json.dumps(dashboard, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (out / "delivery-dashboard.html").write_text(build_dashboard_html(dashboard), encoding="utf-8")
+        print(json.dumps(dashboard, ensure_ascii=False, indent=2))
+        return 0
     if sub == "next-plan-shard":
         if args.out_dir is None:
             raise SystemExit("delivery-run next-plan-shard requires --out-dir")

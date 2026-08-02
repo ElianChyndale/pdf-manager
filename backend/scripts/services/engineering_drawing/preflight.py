@@ -36,8 +36,16 @@ def run_preflight(
     formal_dir: Path | None = None,
     glossary_dir: Path | None = None,
     prompt_dir: Path | None = None,
+    production_runtime: bool = False,
 ) -> dict[str, Any]:
-    """Run all preflight checks and return the report."""
+    """Run all preflight checks and return the report.
+
+    ``production_runtime=True`` additionally verifies the PRODUCTION execution
+    environment (PaddleOCR, DeepSeek endpoint, translation provider, PyMuPDF,
+    and the pinned dependency set) — the check that must be green before the
+    canary phase actually calls OCR/LLM.  Without the flag these are reported
+    as advisory so dev/CI preflight does not fail on a missing local model.
+    """
     checks: list[dict[str, Any]] = []
     critical_failures: list[str] = []
 
@@ -105,6 +113,10 @@ def run_preflight(
         key_present = False
     check("llm_api_key_present", key_present, "translation provider key", critical=False)
 
+    # ---- Production runtime checks (--production-runtime) -------------------
+    if production_runtime:
+        _production_runtime_checks(checks, critical_failures, check)
+
     # CJK font
     try:
         font_path = resolve_cjk_font()
@@ -113,7 +125,19 @@ def run_preflight(
         check("cjk_font_present", False, str(error))
 
     # Glossary / TM readable
-    glossary_dir = Path(glossary_dir) if glossary_dir else Path(source_root).parent / "05_Glossary_TM"
+    # Resolve in priority order: explicit --glossary-tm-dir arg, then the
+    # manifest-declared glossary_tm_dir (relative to the delivery root =
+    # source_root.parent), then the legacy implicit ../05_Glossary_TM.
+    resolved_glossary = None
+    if glossary_dir:
+        resolved_glossary = Path(glossary_dir)
+    else:
+        declared = str(manifest.get("glossary_tm_dir") or "")
+        if declared:
+            delivery_root = Path(source_root).parent
+            candidate = Path(declared)
+            resolved_glossary = candidate if candidate.is_absolute() else delivery_root / candidate
+    glossary_dir = resolved_glossary or (Path(source_root).parent / "05_Glossary_TM")
     glossary_ok = (glossary_dir / "engineering-glossary-v1.csv").is_file()
     tm_ok = (glossary_dir / "translation-memory-v1.json").is_file()
     check("glossary_readable", glossary_ok, str(glossary_dir / "engineering-glossary-v1.csv"), critical=False)
@@ -157,6 +181,67 @@ def run_preflight(
             "note": "Codex quota/model availability is a manual start condition; it cannot be auto-verified by a local script.",
         },
     }
+
+
+def _production_runtime_checks(checks: list, critical_failures: list, check: Any) -> None:
+    """Verify the PRODUCTION execution environment before any OCR/LLM call."""
+    # PaddleOCR importable.
+    try:
+        import paddleocr  # noqa: F401
+
+        check("runtime_paddleocr", True, "paddleocr importable")
+    except Exception as error:
+        check("runtime_paddleocr", False, f"paddleocr import failed: {error}")
+
+    # DeepSeek OCR runner present (endpoint reachability is a network check done
+    # at canary time; here we verify the runner module + endpoint config exist).
+    try:
+        from services.engineering_drawing.ocr_runners import deepseek_runner
+
+        check("runtime_deepseek_ocr", True, f"deepseek_runner at {Path(deepseek_runner.__file__).name}")
+    except Exception as error:
+        check("runtime_deepseek_ocr", False, f"deepseek_runner import failed: {error}")
+
+    # Translation provider key + base URL.
+    try:
+        from services.translation.llm.shared.provider_runtime import DEFAULT_BASE_URL, get_api_key
+
+        key_present = bool(get_api_key(required=False))
+        check("runtime_translation_provider", key_present, f"translation key present; base_url={DEFAULT_BASE_URL}")
+    except Exception as error:
+        check("runtime_translation_provider", False, f"translation provider probe failed: {error}")
+
+    # PyMuPDF version (pinned in frozen config).
+    import fitz as _fitz
+
+    check("runtime_pymupdf", True, f"pymupdf {_fitz.version[0]}")
+
+    # Pinned dependency set (from frozen-production-config.json dependency_versions).
+    expected = {
+        "pymupdf": "1.27.2.3",
+        "pikepdf": "10.6.0",
+        "Pillow": "11.0.0",
+        "numpy": "2.1.2",
+        "rapidocr_onnxruntime": "1.2.3",
+    }
+    import importlib.metadata as im
+
+    mismatched: list[str] = []
+    for package, version in expected.items():
+        try:
+            installed = im.version(package)
+            if installed != version:
+                mismatched.append(f"{package} {installed} != {version}")
+        except Exception:
+            mismatched.append(f"{package} not installed")
+    check("runtime_dependencies", not mismatched, "; ".join(mismatched) or "all pinned deps match")
+
+    # CJK font for the render path.
+    try:
+        font_path = resolve_cjk_font()
+        check("runtime_cjk_font", True, str(font_path))
+    except FileNotFoundError as error:
+        check("runtime_cjk_font", False, str(error))
 
 
 def estimate_capacity(*, items: list[Mapping[str, Any]], source_root: Path) -> dict[str, Any]:

@@ -434,6 +434,82 @@ def _risk_score(profile: Mapping[str, Any]) -> int:
 # Batch summary
 # --------------------------------------------------------------------------
 
+def build_delivery_report(
+    *,
+    manifest: Mapping[str, Any],
+    source_root: Path,
+    duplicate_map: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Delivery-clarity report: source vs unique-processed vs delivered.
+
+    Resolves the 130-vs-160 business question.  When ``duplicate_map`` is
+    provided (original path -> eng-<id>), the report shows the duplicate set
+    that is REUSED, so the customer sees the delivered file count (161).
+    """
+    items = list(manifest.get("items") or [])
+    unique_processed = len(items)
+    dup_map = dict(duplicate_map or {})
+    duplicates_reused = len(dup_map)
+    delivered_files = unique_processed + duplicates_reused
+
+    # Raw source count = unique content hashes + the duplicates that reuse them.
+    hashes = [str(item.get("content_hash") or "") for item in items]
+    unique_hashes = set(h for h in hashes if h)
+    source_count = len(unique_hashes) + duplicates_reused
+
+    return {
+        "schema": "engineering-drawing-delivery-report-v1",
+        "source_count": source_count,
+        "unique_processed": unique_processed,
+        "duplicates_reused": duplicates_reused,
+        "delivered_files": delivered_files,
+        "source_hashes_unique": len(unique_hashes),
+        "note": (
+            "source_count = unique processed + duplicates reused; "
+            "delivered_files = unique_processed + duplicates reused"
+        ),
+    }
+
+
+def build_duplicate_map(
+    *,
+    manifest: Mapping[str, Any],
+    source_root: Path,
+    all_sources: Iterable[Path],
+) -> dict[str, str]:
+    """Map every duplicate source path to its canonical eng-<id>.
+
+    ``all_sources`` is the full raw inventory (including duplicates).  For each
+    raw PDF whose content hash matches a manifest item, the map records
+    ``original_path -> eng-<id>``.  Items already canonical (their own name) are
+    excluded; only genuine duplicates are mapped.
+    """
+    items = list(manifest.get("items") or [])
+    hash_to_id = {
+        str(item.get("content_hash") or ""): str(item.get("item_id") or "")
+        for item in items
+        if str(item.get("content_hash") or "")
+    }
+    # Count occurrences of each content hash in the raw tree: a canonical file
+    # is the FIRST occurrence; every later occurrence is a genuine duplicate.
+    occurrence_by_hash: dict[str, list[Path]] = {}
+    for raw in all_sources:
+        raw = Path(raw)
+        try:
+            content_hash = file_sha256(raw)
+        except OSError:
+            continue
+        if content_hash in hash_to_id:
+            occurrence_by_hash.setdefault(content_hash, []).append(raw)
+    duplicate_map: dict[str, str] = {}
+    for content_hash, paths in occurrence_by_hash.items():
+        canonical_id = hash_to_id[content_hash]
+        # The canonical raw source is the first path; the rest are duplicates.
+        for extra in paths[1:]:
+            duplicate_map[str(extra)] = canonical_id
+    return duplicate_map
+
+
 def batch_summary(batch: dict[str, Any]) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for item in batch.get("items") or []:
@@ -463,6 +539,8 @@ __all__ = [
     "PLAN_SCHEMA",
     "SHARD_SCHEMA",
     "batch_summary",
+    "build_delivery_report",
+    "build_duplicate_map",
     "build_plan_packet",
     "build_plan_shards",
     "export_plan_packets",
