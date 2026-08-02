@@ -536,7 +536,7 @@ def render_planned_opaque_blocks(
                             runs_ok = False
                             break
                         if run_font == "simhei":
-                            page.insert_font(fontname="simhei", fontfile=str(SIMHEI))
+                            page.insert_font(fontname="simhei", fontfile=str(resolve_cjk_font()))
                         run_result = page.insert_textbox(
                             fitz.Rect(run["bbox"]) * page.derotation_matrix,
                             str(run["text"]),
@@ -567,7 +567,7 @@ def render_planned_opaque_blocks(
                     failed.append(str(block.get("block_id") or ""))
                     continue
                 if fontname == "simhei":
-                    page.insert_font(fontname="simhei", fontfile=str(SIMHEI))
+                    page.insert_font(fontname="simhei", fontfile=str(resolve_cjk_font()))
                 exact_color = placement.get("color") or placement.get("colour")
                 if not isinstance(exact_color, (list, tuple)) or len(exact_color) != 3:
                     failed.append(str(block.get("block_id") or ""))

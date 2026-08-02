@@ -79,6 +79,37 @@ Run from `backend/scripts` as `python -m services.engineering_drawing.cli <cmd>`
 | `v4-run audit-formal` | Read-only compliance report of a formal dir (sidecar + delivery manifest). |
 | `v4-run scorecard` | Aggregate per-run KPIs into a batch scorecard (JSON + HTML). |
 | `v4-run review-queue` | Generate a risk-ranked HTML review sheet with 4× zoom crops. |
+| `delivery-run preflight` | Production preflight (env + capacity). `--production-runtime` verifies the execution environment; honors the manifest-declared `glossary_tm_dir`. |
+| `delivery-run validate-production` | Read-only dry-run flight checklist (manifest, PDFs, context, glossary/TM, naming, freeze config). No OCR/LLM/render. |
+| `delivery-run delivery-report` | Delivery-clarity report (source_count / unique_processed / duplicates_reused / delivered_files). Reads sibling `duplicate-map.json`. |
+| `delivery-run duplicate-map` | Map content-identical duplicates to their canonical `eng-<id>` (requires `--all-sources-root`). |
+| `delivery-run dashboard` | Live production dashboard (JSON + HTML) + canary resource prediction. |
+| `delivery-run export-plan-packets` / `import-supervisor-plans` / `validate-supervisor-plans` | The Codex plan-packet pipeline (per-page packets → supervisor plans → validation). |
+| `delivery-run start` | Start a batch phase (canary/pilot/production) with `--resume`, `--retry-failed`, `--only`, `--skip-released`. |
+| `delivery-run summary` / `phase-gate` | Batch state summary / phase-stop gate. |
+| `delivery-run review-decision-import` / `review-decision-apply` | Persistent review decisions → immutable revision runs. |
+
+## Production delivery workflow (delivery-160)
+
+The official delivery pipeline for a batch (driven by the next Codex session) is:
+
+```text
+frozen-production-config.json   <- the freeze (repo root; git_commit + policy_fingerprint)
+  → delivery-run validate-production   (dry-run flight checklist, no OCR/LLM/render)
+  → delivery-run preflight --production-runtime   (verify the production execution environment)
+  → delivery-run start --phase canary   → review   → repair   → pilot   → production
+  → review queue / revision runs
+  → final publication into v4.0-readable-zone-complete
+```
+
+- **Source of truth** = `frozen-production-config.json` + the delivery manifest
+  (`delivery-160.json`, private dir) + the runtime environment. Historical files
+  are reference only and must never be used for production execution.
+- Production inputs live in a **private** directory (e.g. `D:\AmyProjects\business\delivery-160\`),
+  never in this repo; `delivery-run` commands read the manifest there.
+- `delivery-run` commands use the **subcommand-first** form:
+  `delivery-run preflight --manifest ... --source-root ... --output-root ...`
+  (arg-before-subcommand does not parse).
 
 ## Invariants — never break these
 
