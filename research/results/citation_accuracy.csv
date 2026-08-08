@@ -1,0 +1,5 @@
+method,citation_accuracy,citation_faithfulness
+raw_text,0.350,0.350
+ocr_only,1.000,1.000
+layout_aware,1.000,1.000
+layout_aware_metadata,1.000,1.000

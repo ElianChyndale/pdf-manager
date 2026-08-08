@@ -1,0 +1,11 @@
+{
+  "result_type": "deterministic_local_benchmark",
+  "page_count": 24,
+  "question_count": 40,
+  "methods": [
+    "raw_text",
+    "ocr_only",
+    "layout_aware",
+    "layout_aware_metadata"
+  ]
+}

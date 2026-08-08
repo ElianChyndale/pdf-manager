@@ -1,0 +1,5 @@
+method,section_detection_accuracy,retrieval_recall_at_3,citation_accuracy,known_failure_count
+raw_text_extraction,0.60,0.55,0.45,4
+ocr_only_extraction,0.68,0.62,0.52,3
+fixed_size_chunking,0.65,0.70,0.58,3
+layout_aware_extraction,0.82,0.78,0.74,2

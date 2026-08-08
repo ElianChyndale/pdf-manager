@@ -1,19 +1,37 @@
 # PDF Manager
 
 <p align="center">
-  <strong>PDF retain-layout translation & toolkit</strong>
+  <strong>Document-intelligence support infrastructure for EcoQuant Pro</strong>
 </p>
 
-PDF Manager is an all-in-one PDF tool that combines AI-powered layout-preserving translation with a built-in PDF toolbox. Translate PDFs while keeping the original formatting — and use the built-in tools to merge, split, compress, rotate, edit metadata, and encrypt PDFs.
+PDF Manager is a standalone PDF retain-layout translation and toolkit project. In this portfolio, it is positioned as supporting infrastructure for EcoQuant Pro rather than as a fourth flagship project.
+
+Used by EcoQuant Pro for OCR/layout-aware extraction and structured evidence generation.
+
+## Public Readiness Summary
+
+| Area | Summary |
+| --- | --- |
+| Problem | EcoQuant-style financial AI needs PDF-heavy ESG/RWA documents converted into structured evidence with layout context. |
+| Method | PDF Manager provides OCR/layout-aware extraction, block metadata, chunking support, and PDF workflow utilities. |
+| Evaluation | Research artifacts live under `research/results/`, with document-intelligence documentation under `docs/`. |
+| Limitations | Public fixtures are small and synthetic; real benchmarks require public or user-owned documents with clear redistribution rights. |
+| Application relevance | In this portfolio, PDF Manager supports EcoQuant Pro rather than acting as a fourth flagship project. |
 
 ## Features
 
+### Document Intelligence Support
+- **Layout-aware extraction** - OCR and document parsing patterns for PDF-heavy evidence workflows
+- **Structured evidence generation** - page, section, and block metadata that can feed retrieval systems
+- **Failure analysis** - notes on OCR/layout limits that help downstream systems report uncertainty
+- **EcoQuant support path** - ESG/RWA reports can become evidence chunks for retrieval and citation checks
+
 ### Translation Pipeline
-- **Layout-preserving translation** — OCR → LLM translation → Typst rendering, keeping formulas, tables, and page structure intact
-- **Scanned/image PDF support** — Handles both editable and scanned PDFs
-- **Inline formula rendering** — Complex math formulas are preserved and rendered correctly
-- **Glossary support** — Customizable terminology tables for consistent translation
-- **Side-by-side reader** — Compare source and translated pages with interactive region highlighting
+- **Layout-preserving translation** - OCR to LLM translation to Typst rendering, keeping formulas, tables, and page structure visible
+- **Scanned/image PDF support** - Handles both editable and scanned PDFs
+- **Inline formula rendering** - Complex math formulas are preserved and rendered in the output
+- **Glossary support** - Customizable terminology tables for consistent translation
+- **Side-by-side reader** - Compare source and translated pages with interactive region highlighting
 
 ### PDF Toolkit
 - **Merge PDFs** — Concatenate multiple PDFs end-to-end
@@ -74,10 +92,13 @@ Frontend (HTML/Tailwind/JS)  →  Rust API (Axum)  →  Python backend
                                                          → PDF Rendering (Typst/PyMuPDF)
 ```
 
-## Features
+## Portfolio Role
 
-- **PDF Translation** — Retain-layout translation via OCR + LLM pipeline
-- **PDF Toolkit** — Merge, split, compress, rotate, metadata editing, and encrypt/decrypt functionality
+PDF Manager remains useful as a standalone repository, but the portfolio narrative treats it as EcoQuant support:
+
+- EcoQuant Pro is the flagship financial AI system.
+- PDF Manager provides OCR/layout-aware extraction and structured document evidence.
+- AI Research Engineering Lab is the fourth flagship project.
 
 ## License
 

@@ -1,0 +1,10 @@
+{
+  "result_type": "sample_fixture",
+  "scope": "Synthetic extraction and retrieval comparison for proof-layer demonstration.",
+  "sample_size": {
+    "documents": 1,
+    "questions": 5,
+    "methods": 4
+  },
+  "key_result": "Layout-aware extraction had the best sample section detection and citation accuracy."
+}

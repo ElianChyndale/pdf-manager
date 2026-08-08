@@ -1,0 +1,7 @@
+failure_type,description,most_affected_method
+table_boundary_failure,Table cells flattened into prose,raw_text
+two_column_reading_order_failure,Two-column content read out of order,raw_text
+ocr_numeric_error,OCR changes numeric bond amount,ocr_only
+lost_footnote,Footnote context not attached to chunk,fixed_chunking
+incorrect_page_citation,Answer text appears near correct evidence but page is wrong,ocr_only
+merged_section_heading,Adjacent headings merged into one section,layout_aware
